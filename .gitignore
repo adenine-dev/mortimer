@@ -1,1 +1,5 @@
+# cmake
 build
+
+# clangd
+.cache

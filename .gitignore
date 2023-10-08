@@ -3,3 +3,6 @@ build
 
 # clangd
 .cache
+
+# editor
+.vscode

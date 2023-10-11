@@ -2,6 +2,7 @@
 
 #include "SDL_video.h"
 #include "SDL_vulkan.h"
+#include <ccVector.h>
 #include <vulkan/vulkan_core.h>
 
 #include "types.h"
@@ -50,6 +51,9 @@ typedef struct {
 
   u32 frame;
   PerFrameData frame_data[MAX_FRAMES_IN_FLIGHT];
+
+  mat4x4 camera_view;
+  mat4x4 camera_projection;
 } Renderer;
 
 Renderer renderer_create(SDL_Window *window);

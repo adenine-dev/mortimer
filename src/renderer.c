@@ -6,6 +6,7 @@
 #include <vulkan/vulkan_core.h>
 
 #include "SDL_video.h"
+#include "ccVector.h"
 #include "log.h"
 #include "maths.h"
 #include "renderer.h"
@@ -616,6 +617,13 @@ Renderer renderer_create(SDL_Window *window) {
   VkPipelineLayoutCreateInfo triangle_shader_pipeline_layout_create_info =
       (VkPipelineLayoutCreateInfo){
           .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+          .pushConstantRangeCount = 1,
+          .pPushConstantRanges =
+              &(VkPushConstantRange){
+                  .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                  .offset = 0,
+                  .size = sizeof(mat4x4),
+              },
       };
 
   ASSURE_VK(vkCreatePipelineLayout(
@@ -727,6 +735,15 @@ Renderer renderer_create(SDL_Window *window) {
     };
   }
 
+  mat4x4LookAt(renderer.camera_view, vec3New(0.0f, 0.0f, 1.0f),
+               vec3New(0.0f, 0.0f, 0.0f), vec3New(0.0f, 1.0f, 0.0f));
+
+  mat4x4Perspective(
+      renderer.camera_projection, M_PI * 0.4,
+      (f32)renderer.physical_device_info.swapchain_extent.width /
+          (f32)renderer.physical_device_info.swapchain_extent.height,
+      0.001, 1000.0);
+
   return renderer;
 }
 
@@ -753,6 +770,11 @@ void renderer_resize(u32 width, u32 height, Renderer *self) {
       .width = width,
       .height = height,
   };
+  mat4x4Perspective(self->camera_projection, M_PI * 0.4,
+                    (f32)self->physical_device_info.swapchain_extent.width /
+                        (f32)self->physical_device_info.swapchain_extent.height,
+                    0.001, 1000.0);
+
   recreate_swapchain(self);
 }
 
@@ -864,6 +886,15 @@ void renderer_update(Renderer *self) {
       .extent = self->physical_device_info.swapchain_extent,
   };
   vkCmdSetScissor(cmdbuffer, 0, 1, &scissor);
+
+  mat4x4 camera_matrix;
+  mat4x4MultiplyMatrix(camera_matrix, self->camera_view,
+                       self->camera_projection);
+
+  vkCmdPushConstants(cmdbuffer, self->triangle_shader_pipeline_layout,
+                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mat4x4),
+                     &camera_matrix);
+
   vkCmdDraw(cmdbuffer, 3, 1, 0, 0);
 
   vkCmdEndRenderPass(cmdbuffer);
@@ -871,7 +902,8 @@ void renderer_update(Renderer *self) {
   ASSURE_VK(vkEndCommandBuffer(cmdbuffer));
 
   VkPipelineStageFlags wait_stages[] = {
-      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+  };
   VkSemaphore signal_semaphore[] = {frame->render_finished};
   VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,

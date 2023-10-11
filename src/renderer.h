@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SDL_video.h"
 #include "SDL_vulkan.h"
 #include <vulkan/vulkan_core.h>
 
@@ -15,6 +16,15 @@ typedef struct {
   VkExtent2D swapchain_extent;
 } PhysicalDeviceInfo;
 
+static const u32 MAX_FRAMES_IN_FLIGHT = 2;
+
+typedef struct {
+  VkSemaphore image_available;
+  VkSemaphore render_finished;
+  VkFence in_flight;
+  VkCommandBuffer command_buffer;
+} PerFrameData;
+
 typedef struct {
   // direct vulkan stuffs
   VkInstance instance;
@@ -23,14 +33,14 @@ typedef struct {
   VkDevice device;
   VkQueue graphics_queue;
   VkQueue present_queue;
+
   VkSurfaceKHR surface;
   VkSwapchainKHR swapchain;
+  u32 swapchain_image_count;
   VkImage *swapchain_images;
   VkImageView *swapchain_image_views;
-  u32 swapchain_image_count;
 
   VkCommandPool command_pool;
-  VkCommandBuffer command_buffer;
 
   VkRenderPass render_pass;
   VkPipelineLayout triangle_shader_pipeline_layout;
@@ -38,13 +48,11 @@ typedef struct {
 
   VkFramebuffer *swapchain_framebuffers;
 
-  VkSemaphore image_available;
-  VkSemaphore render_finished;
-  VkFence in_flight;
+  u32 frame;
+  PerFrameData frame_data[MAX_FRAMES_IN_FLIGHT];
 } Renderer;
 
 Renderer renderer_create(SDL_Window *window);
-
-void renderer_destroy(Renderer *);
-
+void renderer_destroy(Renderer *self);
 void renderer_update(Renderer *self);
+void renderer_resize(u32 width, u32 height, Renderer *self);

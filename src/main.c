@@ -4,6 +4,7 @@
 #include <SDL3/SDL.h>
 #include <SDL_video.h>
 
+#include "SDL_events.h"
 #include "renderer.h"
 #include "types.h"
 
@@ -35,9 +36,11 @@ int main(int argc, char **argv) {
         running = 0;
       }
 
-      renderer_update(&renderer);
+      if (event.type == SDL_EVENT_WINDOW_RESIZED) {
+        renderer_resize(event.window.data1, event.window.data2, &renderer);
+      }
 
-      vkDeviceWaitIdle(renderer.device);
+      renderer_update(&renderer);
     }
   }
 

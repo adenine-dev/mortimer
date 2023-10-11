@@ -39,6 +39,7 @@ file(GLOB_RECURSE SHADER_MODULES
 add_executable(mortimer ${SOURCES})
 target_compile_options(mortimer PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable -Wno-missing-braces)
 target_include_directories(mortimer PRIVATE ${SDL3_INCLUDE_FILES})
+target_include_directories(mortimer PRIVATE vendor/ccVector)
 target_include_directories(mortimer PRIVATE ${Vulkan_INCLUDE_DIR})
 target_link_libraries(mortimer SDL3::SDL3 Vulkan::Vulkan)
 

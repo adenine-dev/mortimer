@@ -1,14 +1,20 @@
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "SDL_events.h"
+#include "SDL_mouse.h"
 #include <SDL3/SDL.h>
 #include <SDL_video.h>
 
-#include "SDL_events.h"
+#
+#include "ccVector.h"
+
+#include "loader.h"
+#include "log.h"
+#include "maths.h"
 #include "renderer.h"
 #include "types.h"
-
-#include "log.h"
 
 int main(int argc, char **argv) {
   if (SDL_Init(SDL_INIT_VIDEO) == 1) {
@@ -27,18 +33,74 @@ int main(int argc, char **argv) {
 
   Renderer renderer = renderer_create(window);
 
+  ObjMesh obj = load_obj("assets/suzanne.obj");
+  Vertex *vb = malloc(obj.vertex_count * sizeof(Vertex));
+  for (usize i = 0; i < obj.vertex_count; i++) {
+    vb[i] = (Vertex){
+        .position = obj.positions[i],
+        .normal = obj.normals[i],
+    };
+  }
+  renderer_set_object(&renderer, obj.vertex_count, vb, obj.index_count,
+                      obj.indicies);
+
+  // Vertex vertices[6] = {
+  //     vec3New(0.0, -0.5, 0.0),
+  //     vec3New(0.5, 0.5, 0.0),
+  //     vec3New(-0.5, 0.5, 0.0),
+  //     //
+  //     vec3New(0.0, 0.5, 0.0),
+  //     vec3New(0.5, -0.5, 0.0),
+  //     vec3New(-0.5, -0.5, 0.0),
+  // };
+  // renderer_set_object(&renderer, 6, vertices, 0, NULL);
+
   SDL_Event event;
-  int running = 1;
+  bool running = true;
+
+  vec3 center = vec3Zero();
+  vec3 eye = vec3New(0.0, 0.0, 2.0);
+  const vec3 up = vec3New(0.0, 1.0, 0.0);
+  f32 radius = 2.0;
 
   while (running) {
     while (SDL_PollEvent(&event)) {
-      if (event.type == SDL_EVENT_QUIT) {
-        running = 0;
+      switch (event.type) {
+      case SDL_EVENT_QUIT: {
+        running = false;
+      } break;
+      case SDL_EVENT_WINDOW_RESIZED: {
+        renderer_resize(&renderer, event.window.data1, event.window.data2);
+      } break;
+      case SDL_EVENT_MOUSE_WHEEL: {
+        radius += event.wheel.y;
+        radius = clamp(radius, 0.1, 10.0);
+        eye = vec3Multiply(vec3Normalize(eye), radius);
+      } break;
+      case SDL_EVENT_MOUSE_MOTION: {
+        if (event.motion.state & SDL_BUTTON_LMASK) {
+          vec2 dA = vec2Multiply(vec2New(-2.0 * M_PI /
+                                             (f32)renderer.physical_device_info
+                                                 .swapchain_extent.width *
+                                             event.motion.xrel,
+                                         M_PI /
+                                             (f32)renderer.physical_device_info
+                                                 .swapchain_extent.height *
+                                             event.motion.yrel),
+                                 radius * 3.0);
+
+          vec3 view = vec3Negate(mat4x4GetRow(renderer.camera_view, 2).xyz);
+          vec3 right = mat4x4GetRow(renderer.camera_view, 0).xyz;
+          vec3 up = vec3Negate(vec3CrossProduct(view, right));
+
+          eye = vec3Add(vec3Multiply(right, dA.x), eye);
+          eye = vec3Add(vec3Multiply(up, dA.y), eye);
+          eye = vec3Multiply(vec3Normalize(eye), radius);
+        }
+      } break;
       }
 
-      if (event.type == SDL_EVENT_WINDOW_RESIZED) {
-        renderer_resize(event.window.data1, event.window.data2, &renderer);
-      }
+      mat4x4LookAt(renderer.camera_view, vec3Add(eye, center), center, up);
 
       renderer_update(&renderer);
     }

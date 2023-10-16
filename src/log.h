@@ -1,5 +1,6 @@
 #pragma once
 
+#include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -22,4 +23,12 @@
     printf("\033[31m[ERROR]: %s:%d \033[0m", __FILE__, __LINE__);              \
     printf(str, ##__VA_ARGS__);                                                \
     printf("\n");                                                              \
+  } while (false)
+
+#define fatalln(str, ...)                                                      \
+  do {                                                                         \
+    printf("\033[31m[ERROR]: %s:%d \033[0m", __FILE__, __LINE__);              \
+    printf(str, ##__VA_ARGS__);                                                \
+    printf("\n");                                                              \
+    assert(false);                                                             \
   } while (false)

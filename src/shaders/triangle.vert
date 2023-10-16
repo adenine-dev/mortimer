@@ -1,16 +1,16 @@
 #version 450
 
-layout( push_constant ) uniform PushConstants
-{
+layout( push_constant ) uniform PushConstants {
 	mat4 camera_matrix;
 } constants;
 
-vec3 positions[3] = vec3[](
-    vec3(0.0, -0.5, 0.0),
-    vec3(0.5, 0.5, 0.0),
-    vec3(-0.5, 0.5, 0.0)
-);
+layout( location = 0 ) in vec3 i_position;
+layout( location = 1 ) in vec3 i_normal;
+
+layout( location = 0) out vec3 o_normal;
 
 void main() {
-    gl_Position = constants.camera_matrix * vec4(positions[gl_VertexIndex], 1.0);
+    vec3 position = i_position.xyz;
+    gl_Position = constants.camera_matrix * vec4(position, 1.0);
+    o_normal = i_normal;
 }

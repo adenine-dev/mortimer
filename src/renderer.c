@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,6 +95,13 @@ void find_swapchain_extent(SDL_Window *window,
   }
 }
 
+const usize ACCEPTABLE_DEPTH_FORMAT_COUNT = 3;
+const VkFormat ACCEPTABLE_DEPTH_FORMATS[ACCEPTABLE_DEPTH_FORMAT_COUNT] = {
+    VK_FORMAT_D32_SFLOAT,
+    VK_FORMAT_D32_SFLOAT_S8_UINT,
+    VK_FORMAT_D24_UNORM_S8_UINT,
+};
+
 PhysicalDeviceInfo get_physical_device(VkInstance instance, SDL_Window *window,
                                        VkSurfaceKHR surface) {
   u32 device_count;
@@ -105,6 +113,7 @@ PhysicalDeviceInfo get_physical_device(VkInstance instance, SDL_Window *window,
       .device = VK_NULL_HANDLE,
       .graphics_family_index = UINT32_MAX,
       .present_family_index = UINT32_MAX,
+      .depth_format = VK_FORMAT_UNDEFINED,
   };
 
   for (u32 i = 0; i < device_count; i++) {
@@ -151,25 +160,48 @@ PhysicalDeviceInfo get_physical_device(VkInstance instance, SDL_Window *window,
     }
 
     // find surface format
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-        device_info.device, surface, &device_info.surface_capabilities);
-    u32 format_count;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(device_info.device, surface,
-                                         &format_count, NULL);
-    if (format_count == 0) {
-      continue;
-    }
-    VkSurfaceFormatKHR *formats =
-        malloc(format_count * sizeof(VkSurfaceFormatKHR));
-    vkGetPhysicalDeviceSurfaceFormatsKHR(device_info.device, surface,
-                                         &format_count, formats);
-    device_info.surface_format = formats[0];
-    for (u32 i = 0; i < format_count; ++i) {
-      if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
-          formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-        device_info.surface_format = formats[i];
-        break;
+    {
+      vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+          device_info.device, surface, &device_info.surface_capabilities);
+      u32 format_count;
+      vkGetPhysicalDeviceSurfaceFormatsKHR(device_info.device, surface,
+                                           &format_count, NULL);
+      if (format_count == 0) {
+        continue;
       }
+      VkSurfaceFormatKHR *formats =
+          malloc(format_count * sizeof(VkSurfaceFormatKHR));
+      vkGetPhysicalDeviceSurfaceFormatsKHR(device_info.device, surface,
+                                           &format_count, formats);
+      device_info.surface_format = formats[0];
+      for (u32 i = 0; i < format_count; ++i) {
+        if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
+            formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+          device_info.surface_format = formats[i];
+          break;
+        }
+      }
+
+      free(formats);
+    }
+
+    // find depth format
+    {
+      VkFormatFeatureFlags feature_flags =
+          VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+      for (usize i = 0; i < ACCEPTABLE_DEPTH_FORMAT_COUNT; ++i) {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(
+            device_info.device, ACCEPTABLE_DEPTH_FORMATS[i], &props);
+        if ((props.optimalTilingFeatures & feature_flags) == feature_flags) {
+          device_info.depth_format = ACCEPTABLE_DEPTH_FORMATS[i];
+          break;
+        }
+      }
+
+      if (device_info.depth_format == VK_FORMAT_UNDEFINED)
+        continue;
     }
 
     // find present mode
@@ -216,7 +248,6 @@ PhysicalDeviceInfo get_physical_device(VkInstance instance, SDL_Window *window,
     find_swapchain_extent(window, &device_info);
 
     free(present_modes);
-    free(formats);
     free(queue_families);
     free(extension_props);
 
@@ -242,6 +273,22 @@ PhysicalDeviceInfo get_physical_device(VkInstance instance, SDL_Window *window,
   free(devices);
 
   return chosen;
+}
+
+u32 find_memory_type(Renderer *self, u32 type_filter,
+                     VkMemoryPropertyFlags properties) {
+  VkPhysicalDeviceMemoryProperties mem_props;
+  vkGetPhysicalDeviceMemoryProperties(self->physical_device_info.device,
+                                      &mem_props);
+
+  for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
+    if ((type_filter & (1 << i)) &&
+        (mem_props.memoryTypes[i].propertyFlags & properties) == properties) {
+      return i;
+    }
+  }
+
+  fatalln("could not find usable memory type");
 }
 
 VkShaderModule create_shader_module(VkDevice device, const unsigned char *spv,
@@ -335,6 +382,65 @@ void create_swapchain(Renderer *self) {
     ASSURE_VK(vkCreateImageView(self->device, &swapchain_image_view_create_info,
                                 NULL, &self->swapchain_image_views[i]));
   }
+
+  VkImageCreateInfo depth_image_create_info = (VkImageCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = self->physical_device_info.depth_format,
+      .extent =
+          (VkExtent3D){
+              .width = self->physical_device_info.swapchain_extent.width,
+              .height = self->physical_device_info.swapchain_extent.height,
+              .depth = 1,
+          },
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  ASSURE_VK(vkCreateImage(self->device, &depth_image_create_info, NULL,
+                          &self->depth_image));
+  VkMemoryRequirements depth_image_mem_reqs;
+  vkGetImageMemoryRequirements(self->device, self->depth_image,
+                               &depth_image_mem_reqs);
+  VkMemoryAllocateInfo depth_image_mem_allocate_info = (VkMemoryAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = depth_image_mem_reqs.size,
+      .memoryTypeIndex =
+          find_memory_type(self, depth_image_mem_reqs.memoryTypeBits,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+  };
+  vkAllocateMemory(self->device, &depth_image_mem_allocate_info, NULL,
+                   &self->depth_image_memory);
+  vkBindImageMemory(self->device, self->depth_image, self->depth_image_memory,
+                    0);
+
+  VkImageViewCreateInfo depth_image_view_create_info = (VkImageViewCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = self->depth_image,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = self->physical_device_info.depth_format,
+      .components =
+          (VkComponentMapping){
+              .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+              .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+              .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+              .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+          },
+      .subresourceRange =
+          (VkImageSubresourceRange){
+              .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+              .baseMipLevel = 0,
+              .levelCount = 1,
+              .baseArrayLayer = 0,
+              .layerCount = 1,
+          },
+  };
+  ASSURE_VK(vkCreateImageView(self->device, &depth_image_view_create_info, NULL,
+                              &self->depth_image_view));
 }
 
 void create_framebuffers(Renderer *self) {
@@ -343,12 +449,16 @@ void create_framebuffers(Renderer *self) {
         malloc(self->swapchain_image_count * sizeof(VkFramebuffer));
   }
   for (u32 i = 0; i < self->swapchain_image_count; i++) {
-    VkImageView attachments[] = {self->swapchain_image_views[i]};
+    const u32 attachment_count = 2;
+    VkImageView attachments[attachment_count] = {
+        self->swapchain_image_views[i],
+        self->depth_image_view,
+    };
 
     VkFramebufferCreateInfo framebuffer_create_info = (VkFramebufferCreateInfo){
         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .renderPass = self->render_pass,
-        .attachmentCount = 1,
+        .attachmentCount = attachment_count,
         .pAttachments = attachments,
         .width = self->physical_device_info.swapchain_extent.width,
         .height = self->physical_device_info.swapchain_extent.height,
@@ -415,7 +525,7 @@ Renderer renderer_create(SDL_Window *window) {
               .applicationVersion = VK_MAKE_VERSION(0, 1, 0),
               .pEngineName = "Mortimer",
               .engineVersion = VK_MAKE_VERSION(0, 1, 0),
-              .apiVersion = VK_API_VERSION_1_0,
+              .apiVersion = VK_API_VERSION_1_1,
           },
   };
 
@@ -561,25 +671,50 @@ Renderer renderer_create(SDL_Window *window) {
       .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
   };
 
+  VkAttachmentDescription depth_attachment_desc = (VkAttachmentDescription){
+      .format = renderer.physical_device_info.depth_format,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+      .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+  };
+
+  VkAttachmentReference depth_attachment_ref = (VkAttachmentReference){
+      .attachment = 1,
+      .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+  };
+
   VkSubpassDescription subpass_desc = (VkSubpassDescription){
       .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
       .colorAttachmentCount = 1,
       .pColorAttachments = &color_attachment_ref,
+      .pDepthStencilAttachment = &depth_attachment_ref,
   };
 
   VkSubpassDependency render_pass_dependency = {
       .srcSubpass = VK_SUBPASS_EXTERNAL,
       .dstSubpass = 0,
-      .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+      .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
       .srcAccessMask = 0,
-      .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-      .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+      .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                       VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
   };
 
+  const u32 attachment_desc_count = 2;
+  VkAttachmentDescription attachment_descs[attachment_desc_count] = {
+      color_attachment_desc,
+      depth_attachment_desc,
+  };
   VkRenderPassCreateInfo render_pass_create_info = (VkRenderPassCreateInfo){
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-      .attachmentCount = 1,
-      .pAttachments = &color_attachment_desc,
+      .attachmentCount = attachment_desc_count,
+      .pAttachments = attachment_descs,
       .subpassCount = 1,
       .pSubpasses = &subpass_desc,
       .dependencyCount = 1,
@@ -630,6 +765,29 @@ Renderer renderer_create(SDL_Window *window) {
       renderer.device, &triangle_shader_pipeline_layout_create_info, NULL,
       &renderer.triangle_shader_pipeline_layout));
 
+  VkVertexInputBindingDescription triangle_vertex_input_binding_desc =
+      (VkVertexInputBindingDescription){
+          .binding = 0,
+          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+          .stride = sizeof(Vertex),
+      };
+  const u32 triangle_vertex_input_attr_desc_count = 2;
+  VkVertexInputAttributeDescription
+      triangle_vertex_input_attr_descs[triangle_vertex_input_attr_desc_count] =
+          {
+              (VkVertexInputAttributeDescription){
+                  .binding = 0,
+                  .location = 0,
+                  .format = VK_FORMAT_R32G32B32_SFLOAT,
+                  .offset = offsetof(Vertex, position),
+              },
+              (VkVertexInputAttributeDescription){
+                  .binding = 0,
+                  .location = 1,
+                  .format = VK_FORMAT_R32G32B32_SFLOAT,
+                  .offset = offsetof(Vertex, normal),
+              },
+          };
   VkGraphicsPipelineCreateInfo triangle_pipeline_create_info =
       (VkGraphicsPipelineCreateInfo){
           .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -642,8 +800,13 @@ Renderer renderer_create(SDL_Window *window) {
               &(VkPipelineVertexInputStateCreateInfo){
                   .sType =
                       VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-                  .vertexBindingDescriptionCount = 0,
-                  .vertexAttributeDescriptionCount = 0,
+                  .vertexBindingDescriptionCount = 1,
+                  .pVertexBindingDescriptions =
+                      &triangle_vertex_input_binding_desc,
+                  .vertexAttributeDescriptionCount =
+                      triangle_vertex_input_attr_desc_count,
+                  .pVertexAttributeDescriptions =
+                      triangle_vertex_input_attr_descs,
               },
           .pInputAssemblyState =
               &(VkPipelineInputAssemblyStateCreateInfo){
@@ -664,7 +827,7 @@ Renderer renderer_create(SDL_Window *window) {
                   .sType =
                       VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                   .polygonMode = VK_POLYGON_MODE_FILL,
-                  .cullMode = VK_CULL_MODE_BACK_BIT,
+                  .cullMode = VK_CULL_MODE_NONE,
                   .frontFace = VK_FRONT_FACE_CLOCKWISE,
                   .lineWidth = 1.0,
               },
@@ -675,7 +838,18 @@ Renderer renderer_create(SDL_Window *window) {
                   .sampleShadingEnable = VK_FALSE,
                   .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
               },
-          // .pDepthStencilState = NULL,
+          .pDepthStencilState =
+              &(VkPipelineDepthStencilStateCreateInfo){
+                  .sType =
+                      VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                  .depthTestEnable = VK_TRUE,
+                  .depthWriteEnable = VK_TRUE,
+                  .depthCompareOp = VK_COMPARE_OP_LESS,
+                  .depthBoundsTestEnable = VK_FALSE,
+                  .minDepthBounds = 0.0f,
+                  .maxDepthBounds = 1.0f,
+                  .stencilTestEnable = VK_TRUE,
+              },
           .pColorBlendState =
               &(VkPipelineColorBlendStateCreateInfo){
                   .sType =
@@ -752,6 +926,11 @@ Renderer renderer_create(SDL_Window *window) {
 // is Fine but not actually. shrug its late and i'm sleepy lol.
 void recreate_swapchain(Renderer *self) {
   vkDeviceWaitIdle(self->device);
+
+  vkDestroyImageView(self->device, self->depth_image_view, NULL);
+  vkDestroyImage(self->device, self->depth_image, NULL);
+  vkFreeMemory(self->device, self->depth_image_memory, NULL);
+
   for (u32 i = 0; i < self->swapchain_image_count; i++) {
     vkDestroyFramebuffer(self->device, self->swapchain_framebuffers[i], NULL);
   }
@@ -765,7 +944,7 @@ void recreate_swapchain(Renderer *self) {
   create_framebuffers(self);
 }
 
-void renderer_resize(u32 width, u32 height, Renderer *self) {
+void renderer_resize(Renderer *self, u32 width, u32 height) {
   self->physical_device_info.swapchain_extent = (VkExtent2D){
       .width = width,
       .height = height,
@@ -781,6 +960,11 @@ void renderer_resize(u32 width, u32 height, Renderer *self) {
 void renderer_destroy(Renderer *renderer) {
   vkDeviceWaitIdle(renderer->device);
 
+  if (renderer->vertex_buffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(renderer->device, renderer->vertex_buffer, NULL);
+    vkFreeMemory(renderer->device, renderer->vertex_buffer_memory, NULL);
+  }
+
   for (usize i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
     PerFrameData *frame = &renderer->frame_data[i];
     vkDestroySemaphore(renderer->device, frame->image_available, NULL);
@@ -789,6 +973,10 @@ void renderer_destroy(Renderer *renderer) {
     vkFreeCommandBuffers(renderer->device, renderer->command_pool, 1,
                          &frame->command_buffer);
   }
+
+  vkDestroyImageView(renderer->device, renderer->depth_image_view, NULL);
+  vkDestroyImage(renderer->device, renderer->depth_image, NULL);
+  vkFreeMemory(renderer->device, renderer->depth_image_memory, NULL);
 
   for (u32 i = 0; i < renderer->swapchain_image_count; i++) {
     vkDestroyFramebuffer(renderer->device, renderer->swapchain_framebuffers[i],
@@ -824,6 +1012,70 @@ void renderer_destroy(Renderer *renderer) {
   vkDestroyInstance(renderer->instance, NULL);
 }
 
+typedef struct {
+  VkBuffer buffer;
+  VkDeviceMemory memory;
+} BufferResult;
+
+BufferResult create_buffer(Renderer *self, u32 size, void *data,
+                           VkBufferUsageFlags usage) {
+  VkBufferCreateInfo vb_create_info = (VkBufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = size,
+      .usage = usage,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  VkBuffer buffer;
+  vkCreateBuffer(self->device, &vb_create_info, NULL, &buffer);
+
+  VkMemoryRequirements mem_reqs;
+  vkGetBufferMemoryRequirements(self->device, buffer, &mem_reqs);
+
+  VkMemoryAllocateInfo allocate_info = (VkMemoryAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = mem_reqs.size,
+      .memoryTypeIndex =
+          find_memory_type(self, mem_reqs.memoryTypeBits,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+  };
+  VkDeviceMemory memory;
+  ASSURE_VK(vkAllocateMemory(self->device, &allocate_info, NULL, &memory));
+  vkBindBufferMemory(self->device, buffer, memory, 0);
+
+  void *mapped_mem;
+  vkMapMemory(self->device, memory, 0, size, 0, &mapped_mem);
+  memcpy(mapped_mem, data, size);
+  vkUnmapMemory(self->device, memory);
+
+  return (BufferResult){
+      .buffer = buffer,
+      .memory = memory,
+  };
+}
+
+void renderer_set_object(Renderer *self, u32 vertex_count, Vertex *vb,
+                         u32 _index_count, u32 *_ib) {
+  vkDeviceWaitIdle(self->device);
+
+  self->vertex_count = vertex_count;
+  self->vb = vb;
+  self->index_count = _index_count;
+  self->ib = _ib;
+
+  if (self->vertex_buffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
+    vkFreeMemory(self->device, self->vertex_buffer_memory, NULL);
+  }
+  // if (self->index_buffer != VK_NULL_HANDLE)
+  //   vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
+
+  BufferResult res = create_buffer(self, vertex_count * sizeof(Vertex), vb,
+                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  self->vertex_buffer = res.buffer;
+  self->vertex_buffer_memory = res.memory;
+}
+
 void renderer_update(Renderer *self) {
   PerFrameData *frame = &self->frame_data[self->frame];
   self->frame = (self->frame + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -848,6 +1100,13 @@ void renderer_update(Renderer *self) {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
   };
   ASSURE_VK(vkBeginCommandBuffer(cmdbuffer, &cmdbuffer_begin_info));
+  const u32 render_pass_clear_value_count = 2;
+  VkClearValue render_pass_clear_values[render_pass_clear_value_count] = {
+      (VkClearValue){
+          .color = (VkClearColorValue){0.0f, 0.0f, 0.0f, 1.0f},
+      },
+      (VkClearValue){.depthStencil = (VkClearDepthStencilValue){1.0f, 0}},
+  };
   VkRenderPassBeginInfo render_pass_begin_info = (VkRenderPassBeginInfo){
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
       .renderPass = self->render_pass,
@@ -858,11 +1117,8 @@ void renderer_update(Renderer *self) {
               .offset.y = 0,
               .extent = self->physical_device_info.swapchain_extent,
           },
-      .clearValueCount = 1,
-      .pClearValues =
-          &(VkClearValue){
-              .color = (VkClearColorValue){0.0f, 0.0f, 0.0f, 1.0f},
-          },
+      .clearValueCount = render_pass_clear_value_count,
+      .pClearValues = render_pass_clear_values,
   };
   vkCmdBeginRenderPass(cmdbuffer, &render_pass_begin_info,
                        VK_SUBPASS_CONTENTS_INLINE);
@@ -872,9 +1128,9 @@ void renderer_update(Renderer *self) {
 
   VkViewport viewport = {
       .x = 0,
-      .y = 0,
+      .y = self->physical_device_info.swapchain_extent.height,
       .width = self->physical_device_info.swapchain_extent.width,
-      .height = self->physical_device_info.swapchain_extent.height,
+      .height = -((f32)self->physical_device_info.swapchain_extent.height),
       .minDepth = 0.0,
       .maxDepth = 1.0,
   };
@@ -895,7 +1151,11 @@ void renderer_update(Renderer *self) {
                      VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mat4x4),
                      &camera_matrix);
 
-  vkCmdDraw(cmdbuffer, 3, 1, 0, 0);
+  VkBuffer buffers[] = {self->vertex_buffer};
+  VkDeviceSize offsets[] = {0};
+  vkCmdBindVertexBuffers(cmdbuffer, 0, 1, buffers, offsets);
+
+  vkCmdDraw(cmdbuffer, self->vertex_count, 1, 0, 0);
 
   vkCmdEndRenderPass(cmdbuffer);
 

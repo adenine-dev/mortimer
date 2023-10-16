@@ -4,3 +4,6 @@
 [submodule "vendor/ccVector"]
 	path = vendor/ccVector
 	url = https://github.com/jobtalle/ccVector.git
+[submodule "vendor/tinyobjloader"]
+	path = vendor/tinyobjloader
+	url = https://github.com/syoyo/tinyobjloader-c.git

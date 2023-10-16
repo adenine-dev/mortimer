@@ -15,6 +15,8 @@ typedef struct {
   VkPresentModeKHR present_mode;
   VkSurfaceFormatKHR surface_format;
   VkExtent2D swapchain_extent;
+  VkFormat depth_format;
+
 } PhysicalDeviceInfo;
 
 static const u32 MAX_FRAMES_IN_FLIGHT = 2;
@@ -25,6 +27,11 @@ typedef struct {
   VkFence in_flight;
   VkCommandBuffer command_buffer;
 } PerFrameData;
+
+typedef struct {
+  vec3 position;
+  vec3 normal;
+} Vertex;
 
 typedef struct {
   // direct vulkan stuffs
@@ -41,6 +48,10 @@ typedef struct {
   VkImage *swapchain_images;
   VkImageView *swapchain_image_views;
 
+  VkImage depth_image;
+  VkDeviceMemory depth_image_memory;
+  VkImageView depth_image_view;
+
   VkCommandPool command_pool;
 
   VkRenderPass render_pass;
@@ -54,9 +65,22 @@ typedef struct {
 
   mat4x4 camera_view;
   mat4x4 camera_projection;
+
+  u32 vertex_count;
+  Vertex *vb;
+  u32 index_count;
+  u32 *ib;
+
+  VkBuffer vertex_buffer;
+  VkDeviceMemory vertex_buffer_memory;
+  // VkBuffer index_buffer;
+  // VkDeviceMemory index_buffer_memory;
 } Renderer;
 
 Renderer renderer_create(SDL_Window *window);
 void renderer_destroy(Renderer *self);
 void renderer_update(Renderer *self);
-void renderer_resize(u32 width, u32 height, Renderer *self);
+void renderer_resize(Renderer *self, u32 width, u32 height);
+
+void renderer_set_object(Renderer *self, u32 vertex_count, Vertex *vb,
+                         u32 index_count, u32 *ib);

@@ -1,4 +1,4 @@
-//! Largely adapted from
+//! Broadly adapted from
 //! https://github.com/syoyo/tinyobjloader-c/blob/master/examples/viewer/viewer.c
 
 #include <assert.h>
@@ -22,32 +22,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 #endif
-
-static void CalcNormal(float N[3], float v0[3], float v1[3], float v2[3]) {
-  float v10[3];
-  float v20[3];
-  float len2;
-
-  v10[0] = v1[0] - v0[0];
-  v10[1] = v1[1] - v0[1];
-  v10[2] = v1[2] - v0[2];
-
-  v20[0] = v2[0] - v0[0];
-  v20[1] = v2[1] - v0[1];
-  v20[2] = v2[2] - v0[2];
-
-  N[0] = v20[1] * v10[2] - v20[2] * v10[1];
-  N[1] = v20[2] * v10[0] - v20[0] * v10[2];
-  N[2] = v20[0] * v10[1] - v20[1] * v10[0];
-
-  len2 = N[0] * N[0] + N[1] * N[1] + N[2] * N[2];
-  if (len2 > 0.0f) {
-    float len = (float)sqrt((double)len2);
-
-    N[0] /= len;
-    N[1] /= len;
-  }
-}
 
 static char *mmap_file(size_t *len, const char *filename) {
 #ifdef _WIN64
@@ -161,24 +135,48 @@ ObjMesh load_obj(const char *filename) {
     if (attrib.face_num_verts[i] % 3 != 0) {
       fatalln("non triangular face in obj file `%s`", filename);
     }
+
     for (int j = 0; j < attrib.face_num_verts[i] / 3; ++j) {
-      for (usize k = 0; k < 3; ++k) {
-        tinyobj_vertex_index_t idx0 = attrib.faces[face_offset + 3 * j + k];
-        int f0 = idx0.v_idx;
-        assert(f0 >= 0);
-        mesh.positions[3 * i + k] = vec3New(attrib.vertices[3 * (usize)f0 + 0],
-                                            attrib.vertices[3 * (usize)f0 + 1],
-                                            attrib.vertices[3 * (usize)f0 + 2]);
+      tinyobj_vertex_index_t idxs[] = {
+          attrib.faces[face_offset + 3 * j + 0],
+          attrib.faces[face_offset + 3 * j + 1],
+          attrib.faces[face_offset + 3 * j + 2],
+      };
+
+      for (u32 k = 0; k < 3; k++) {
+        int f_p = idxs[k].v_idx;
+        assert(f_p >= 0);
+        mesh.positions[3 * i + k] =
+            vec3New(attrib.vertices[3 * (usize)f_p + 0],
+                    attrib.vertices[3 * (usize)f_p + 1],
+                    attrib.vertices[3 * (usize)f_p + 2]);
 
         if (attrib.num_normals) {
-          mesh.normals[3 * i + k] = vec3New(attrib.normals[3 * (usize)f0 + 0],
-                                            attrib.normals[3 * (usize)f0 + 1],
-                                            attrib.normals[3 * (usize)f0 + 2]);
+          int f_n = idxs[k].vn_idx;
+          assert(f_n >= 0);
+          mesh.normals[3 * i + k] =
+              vec3Normalize(vec3New(attrib.vertices[3 * (usize)f_n + 0],
+                                    attrib.vertices[3 * (usize)f_n + 1],
+                                    attrib.vertices[3 * (usize)f_n + 2]));
         }
       }
 
-      face_offset += (usize)attrib.face_num_verts[i];
+      if (!attrib.num_normals) {
+        vec3 p0 = mesh.positions[3 * i + 0];
+        vec3 p1 = mesh.positions[3 * i + 1];
+        vec3 p2 = mesh.positions[3 * i + 2];
+        vec3 u = vec3Subtract(p1, p0);
+        vec3 v = vec3Subtract(p2, p0);
+
+        vec3 n = vec3Normalize(vec3New((u.y * v.z) - (u.z * v.y),
+                                       (u.z * v.x) - (u.x * v.z),
+                                       (u.x * v.y) - (u.y * v.x)));
+        mesh.normals[3 * i + 0] = mesh.normals[3 * i + 1] =
+            mesh.normals[3 * i + 2] = n;
+      }
     }
+
+    face_offset += (usize)attrib.face_num_verts[i];
   }
 
   tinyobj_attrib_free(&attrib);

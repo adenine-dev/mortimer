@@ -155,9 +155,9 @@ ObjMesh load_obj(const char *filename) {
           int f_n = idxs[k].vn_idx;
           assert(f_n >= 0);
           mesh.normals[3 * i + k] =
-              vec3Normalize(vec3New(attrib.vertices[3 * (usize)f_n + 0],
-                                    attrib.vertices[3 * (usize)f_n + 1],
-                                    attrib.vertices[3 * (usize)f_n + 2]));
+              vec3Normalize(vec3New(attrib.normals[3 * (usize)f_n + 0],
+                                    attrib.normals[3 * (usize)f_n + 1],
+                                    attrib.normals[3 * (usize)f_n + 2]));
         }
       }
 

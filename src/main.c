@@ -44,17 +44,6 @@ int main(int argc, char **argv) {
   renderer_set_object(&renderer, obj.vertex_count, vb, obj.index_count,
                       obj.indicies);
 
-  // Vertex vertices[6] = {
-  //     vec3New(0.0, -0.5, 0.0),
-  //     vec3New(0.5, 0.5, 0.0),
-  //     vec3New(-0.5, 0.5, 0.0),
-  //     //
-  //     vec3New(0.0, 0.5, 0.0),
-  //     vec3New(0.5, -0.5, 0.0),
-  //     vec3New(-0.5, -0.5, 0.0),
-  // };
-  // renderer_set_object(&renderer, 6, vertices, 0, NULL);
-
   SDL_Event event;
   bool running = true;
 

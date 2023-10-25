@@ -7,7 +7,6 @@
 #include <SDL3/SDL.h>
 #include <SDL_video.h>
 
-#
 #include "ccVector.h"
 
 #include "loader.h"
@@ -15,6 +14,9 @@
 #include "maths.h"
 #include "renderer.h"
 #include "types.h"
+
+#define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
+#include "cimgui.h"
 
 int main(int argc, char **argv) {
   if (SDL_Init(SDL_INIT_VIDEO) == 1) {
@@ -54,6 +56,8 @@ int main(int argc, char **argv) {
 
   while (running) {
     while (SDL_PollEvent(&event)) {
+      ImGui_ImplSDL3_ProcessEvent(&event);
+
       switch (event.type) {
       case SDL_EVENT_QUIT: {
         running = false;
@@ -62,37 +66,49 @@ int main(int argc, char **argv) {
         renderer_resize(&renderer, event.window.data1, event.window.data2);
       } break;
       case SDL_EVENT_MOUSE_WHEEL: {
-        radius += event.wheel.y;
-        radius = clamp(radius, 0.1, 10.0);
-        eye = vec3Multiply(vec3Normalize(eye), radius);
+        if (!igGetIO()->WantCaptureMouse) {
+          radius += event.wheel.y;
+          radius = clamp(radius, 0.1, 10.0);
+          eye = vec3Multiply(vec3Normalize(eye), radius);
+        }
       } break;
       case SDL_EVENT_MOUSE_MOTION: {
-        if (event.motion.state & SDL_BUTTON_LMASK) {
-          vec2 dA = vec2Multiply(vec2New(-2.0 * M_PI /
-                                             (f32)renderer.physical_device_info
-                                                 .swapchain_extent.width *
-                                             event.motion.xrel,
-                                         M_PI /
-                                             (f32)renderer.physical_device_info
-                                                 .swapchain_extent.height *
-                                             event.motion.yrel),
-                                 radius * 3.0);
+        if (!igGetIO()->WantCaptureMouse) {
+          if (event.motion.state & SDL_BUTTON_LMASK) {
+            vec2 dA =
+                vec2Multiply(vec2New(-2.0 * M_PI /
+                                         (f32)renderer.physical_device_info
+                                             .swapchain_extent.width *
+                                         event.motion.xrel,
+                                     M_PI /
+                                         (f32)renderer.physical_device_info
+                                             .swapchain_extent.height *
+                                         event.motion.yrel),
+                             radius * 3.0);
 
-          vec3 view = vec3Negate(mat4x4GetRow(renderer.camera_view, 2).xyz);
-          vec3 right = mat4x4GetRow(renderer.camera_view, 0).xyz;
-          vec3 up = vec3Negate(vec3CrossProduct(view, right));
+            vec3 view = vec3Negate(mat4x4GetRow(renderer.camera_view, 2).xyz);
+            vec3 right = mat4x4GetRow(renderer.camera_view, 0).xyz;
+            vec3 up = vec3Negate(vec3CrossProduct(view, right));
 
-          eye = vec3Add(vec3Multiply(right, dA.x), eye);
-          eye = vec3Add(vec3Multiply(up, dA.y), eye);
-          eye = vec3Multiply(vec3Normalize(eye), radius);
+            eye = vec3Add(vec3Multiply(right, dA.x), eye);
+            eye = vec3Add(vec3Multiply(up, dA.y), eye);
+            eye = vec3Multiply(vec3Normalize(eye), radius);
+          }
         }
       } break;
       }
 
       mat4x4LookAt(renderer.camera_view, vec3Add(eye, center), center, up);
-
-      renderer_update(&renderer);
     }
+
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+
+    igNewFrame();
+    // imgui commands
+    bool open = true;
+    igShowDemoWindow(&open);
+    renderer_update(&renderer);
   }
 
   renderer_destroy(&renderer);

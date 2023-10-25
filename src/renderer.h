@@ -3,8 +3,11 @@
 #include "SDL_video.h"
 #include "SDL_vulkan.h"
 #include <ccVector.h>
+#include <stdlib.h>
 #include <vulkan/vulkan_core.h>
 
+#include "imgui_renderer.h"
+#include "log.h"
 #include "types.h"
 
 typedef struct {
@@ -33,7 +36,7 @@ typedef struct {
   vec3 normal;
 } Vertex;
 
-typedef struct {
+typedef struct Renderer_t {
   // direct vulkan stuffs
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
@@ -75,6 +78,8 @@ typedef struct {
   VkDeviceMemory vertex_buffer_memory;
   // VkBuffer index_buffer;
   // VkDeviceMemory index_buffer_memory;
+
+  ImguiRendererImpl imgui_impl;
 } Renderer;
 
 Renderer renderer_create(SDL_Window *window);
@@ -84,3 +89,13 @@ void renderer_resize(Renderer *self, u32 width, u32 height);
 
 void renderer_set_object(Renderer *self, u32 vertex_count, Vertex *vb,
                          u32 index_count, u32 *ib);
+
+#define ASSURE_VK(expr)                                                        \
+  {                                                                            \
+    VkResult assure_vk_result = expr;                                          \
+    if (assure_vk_result != VK_SUCCESS) {                                      \
+      errorln("Vulkan expr `%s` failed with code %d\n", #expr,                 \
+              assure_vk_result);                                               \
+      exit(1);                                                                 \
+    }                                                                          \
+  }

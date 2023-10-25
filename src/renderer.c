@@ -8,22 +8,13 @@
 
 #include "SDL_video.h"
 #include "ccVector.h"
+#include "imgui_renderer.h"
 #include "log.h"
 #include "maths.h"
 #include "renderer.h"
 #include "shaders/triangle_frag_spv.h"
 #include "shaders/triangle_vert_spv.h"
 #include "types.h"
-
-#define ASSURE_VK(expr)                                                        \
-  {                                                                            \
-    VkResult assure_vk_result = expr;                                          \
-    if (assure_vk_result != VK_SUCCESS) {                                      \
-      errorln("Vulkan expr `%s` failed with code %d\n", #expr,                 \
-              assure_vk_result);                                               \
-      exit(1);                                                                 \
-    }                                                                          \
-  }
 
 bool assure_validation_layer_support(usize n, const char **requested_layers) {
   u32 available_layer_count;
@@ -918,6 +909,8 @@ Renderer renderer_create(SDL_Window *window) {
           (f32)renderer.physical_device_info.swapchain_extent.height,
       0.001, 1000.0);
 
+  renderer.imgui_impl = init_imgui_render_impl(&renderer, window);
+
   return renderer;
 }
 
@@ -959,6 +952,8 @@ void renderer_resize(Renderer *self, u32 width, u32 height) {
 
 void renderer_destroy(Renderer *renderer) {
   vkDeviceWaitIdle(renderer->device);
+
+  imgui_renderer_destroy(renderer, &renderer->imgui_impl);
 
   if (renderer->vertex_buffer != VK_NULL_HANDLE) {
     vkDestroyBuffer(renderer->device, renderer->vertex_buffer, NULL);
@@ -1095,6 +1090,7 @@ void renderer_update(Renderer *self) {
   vkResetFences(self->device, 1, &frame->in_flight);
 
   VkCommandBuffer cmdbuffer = frame->command_buffer;
+
   vkResetCommandBuffer(cmdbuffer, 0);
   VkCommandBufferBeginInfo cmdbuffer_begin_info = (VkCommandBufferBeginInfo){
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1156,6 +1152,8 @@ void renderer_update(Renderer *self) {
   vkCmdBindVertexBuffers(cmdbuffer, 0, 1, buffers, offsets);
 
   vkCmdDraw(cmdbuffer, self->vertex_count, 1, 0, 0);
+
+  imgui_renderer_update(cmdbuffer);
 
   vkCmdEndRenderPass(cmdbuffer);
 

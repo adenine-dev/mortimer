@@ -6,3 +6,6 @@ build
 
 # editor
 .vscode
+
+# imgui things
+imgui.ini

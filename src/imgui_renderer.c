@@ -1,6 +1,7 @@
 #include "imgui_renderer.h"
 #include "SDL_video.h"
 #include "cimgui.h"
+#include "embed/FiraCode/FiraCode-Regular.h"
 #include "log.h"
 #include "renderer.h"
 
@@ -71,6 +72,10 @@ ImguiRendererImpl init_imgui_render_impl(Renderer *renderer,
       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
   ASSURE_VK(vkBeginCommandBuffer(command_buffer, &begin_info));
+  ImFontAtlas_AddFontFromMemoryTTF(
+      igGetIO()->Fonts, (void *)FiraCode_Regular_ttf_data,
+      FiraCode_Regular_ttf_size, 18.0, NULL,
+      ImFontAtlas_GetGlyphRangesDefault(igGetIO()->Fonts));
 
   ImGui_ImplVulkan_CreateFontsTexture(command_buffer);
 

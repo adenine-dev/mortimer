@@ -16,6 +16,9 @@ typedef struct ImguiRendererImpl_t {
 ImguiRendererImpl init_imgui_render_impl(Renderer *renderer,
                                          SDL_Window *window);
 
+void imgui_renderer_begin();
+void imgui_renderer_end();
+
 void imgui_renderer_update(VkCommandBuffer cmdbuffer);
 
 void imgui_renderer_destroy(Renderer *renderer, ImguiRendererImpl *impl);

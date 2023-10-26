@@ -68,6 +68,7 @@ typedef struct Renderer_t {
 
   mat4x4 camera_view;
   mat4x4 camera_projection;
+  f32 camera_fov;
 
   u32 vertex_count;
   Vertex *vb;

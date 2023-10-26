@@ -8,6 +8,9 @@
 
 #include "SDL_video.h"
 #include "ccVector.h"
+#define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
+#include "cimgui.h"
+
 #include "imgui_renderer.h"
 #include "log.h"
 #include "maths.h"
@@ -461,6 +464,13 @@ void create_framebuffers(Renderer *self) {
   }
 }
 
+void renderer_set_or_update_camera(Renderer *self) {
+  mat4x4Perspective(self->camera_projection, self->camera_fov * (M_PI / 180.0),
+                    (f32)self->physical_device_info.swapchain_extent.width /
+                        (f32)self->physical_device_info.swapchain_extent.height,
+                    0.001, 1000.0);
+}
+
 Renderer renderer_create(SDL_Window *window) {
   Renderer renderer = {0};
   // create instance
@@ -903,11 +913,8 @@ Renderer renderer_create(SDL_Window *window) {
   mat4x4LookAt(renderer.camera_view, vec3New(0.0f, 0.0f, 1.0f),
                vec3New(0.0f, 0.0f, 0.0f), vec3New(0.0f, 1.0f, 0.0f));
 
-  mat4x4Perspective(
-      renderer.camera_projection, M_PI * 0.4,
-      (f32)renderer.physical_device_info.swapchain_extent.width /
-          (f32)renderer.physical_device_info.swapchain_extent.height,
-      0.001, 1000.0);
+  renderer.camera_fov = 80.0;
+  renderer_set_or_update_camera(&renderer);
 
   renderer.imgui_impl = init_imgui_render_impl(&renderer, window);
 
@@ -942,10 +949,8 @@ void renderer_resize(Renderer *self, u32 width, u32 height) {
       .width = width,
       .height = height,
   };
-  mat4x4Perspective(self->camera_projection, M_PI * 0.4,
-                    (f32)self->physical_device_info.swapchain_extent.width /
-                        (f32)self->physical_device_info.swapchain_extent.height,
-                    0.001, 1000.0);
+
+  renderer_set_or_update_camera(self);
 
   recreate_swapchain(self);
 }
@@ -1071,7 +1076,18 @@ void renderer_set_object(Renderer *self, u32 vertex_count, Vertex *vb,
   self->vertex_buffer_memory = res.memory;
 }
 
+void renderer_draw_gui(Renderer *self) {
+  if (igCollapsingHeader_BoolPtr("Camera", NULL,
+                                 ImGuiTreeNodeFlags_DefaultOpen |
+                                     ImGuiTreeNodeFlags_CollapsingHeader)) {
+    if (igSliderFloat("FOV", &self->camera_fov, 0.01, 180.0, "%.1fdeg", 0)) {
+      renderer_set_or_update_camera(self);
+    }
+  }
+}
+
 void renderer_update(Renderer *self) {
+  imgui_renderer_begin();
   PerFrameData *frame = &self->frame_data[self->frame];
   self->frame = (self->frame + 1) % MAX_FRAMES_IN_FLIGHT;
 
@@ -1153,6 +1169,9 @@ void renderer_update(Renderer *self) {
 
   vkCmdDraw(cmdbuffer, self->vertex_count, 1, 0, 0);
 
+  renderer_draw_gui(self);
+
+  imgui_renderer_end();
   imgui_renderer_update(cmdbuffer);
 
   vkCmdEndRenderPass(cmdbuffer);

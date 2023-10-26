@@ -94,6 +94,18 @@ ImguiRendererImpl init_imgui_render_impl(Renderer *renderer,
   return ret;
 }
 
+void imgui_renderer_begin() {
+  igBegin("Properties", NULL, 0);
+  static bool debug_show = true;
+  if (igCollapsingHeader_BoolPtr("Debug", NULL,
+                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+    igText("Application average %.3f ms/frame (%.1f FPS)",
+           1000.0f / igGetIO()->Framerate, igGetIO()->Framerate);
+  }
+}
+
+void imgui_renderer_end() { igEnd(); }
+
 void imgui_renderer_update(VkCommandBuffer cmdbuffer) {
   igRender();
 
@@ -105,5 +117,4 @@ void imgui_renderer_destroy(Renderer *renderer, ImguiRendererImpl *impl) {
   ImGui_ImplVulkanH_DestroyWindow(renderer->instance, renderer->device,
                                   &impl->main_window, NULL);
   ImGui_ImplVulkan_Shutdown();
-  igShutdown();
 }

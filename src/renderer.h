@@ -36,6 +36,13 @@ typedef struct {
   vec3 normal;
 } Vertex;
 
+typedef struct {
+  VkImage image;
+  VkDeviceMemory memory;
+  VkImageView view;
+  VkFormat format;
+} FramebufferAttachment;
+
 typedef struct Renderer_t {
   // direct vulkan stuffs
   VkInstance instance;
@@ -51,15 +58,23 @@ typedef struct Renderer_t {
   VkImage *swapchain_images;
   VkImageView *swapchain_image_views;
 
-  VkImage depth_image;
-  VkDeviceMemory depth_image_memory;
-  VkImageView depth_image_view;
+  FramebufferAttachment depth_attachment;
+  FramebufferAttachment normal_attachment;
+  FramebufferAttachment position_attachment;
+  VkSampler vec3_sampler;
 
   VkCommandPool command_pool;
 
+  VkDescriptorPool descriptor_pool;
+
   VkRenderPass render_pass;
-  VkPipelineLayout triangle_shader_pipeline_layout;
-  VkPipeline triangle_pipeline;
+  VkPipelineLayout first_bounce_pipeline_layout;
+  VkPipeline first_bounce_pipeline;
+
+  VkDescriptorSetLayout present_descriptor_set_layout;
+  VkDescriptorSet present_descriptor_set;
+  VkPipelineLayout present_pipeline_layout;
+  VkPipeline present_pipeline;
 
   VkFramebuffer *swapchain_framebuffers;
 

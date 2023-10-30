@@ -1,3 +1,2 @@
 # built "binary" files
-*.c
-*.h
+embed/

@@ -20,6 +20,7 @@ function(add_shader_modules TARGET)
         set_source_files_properties(${spv_output_file} PROPERTIES GENERATED TRUE)
 
         get_filename_component(outdir ${_source} DIRECTORY)
+        set(outdir ${outdir}/embed)
         target_add_binary_embed(${TARGET} ${spv_output_file} OUTDIR ${outdir} ALIGNMENT 4)
     endforeach()
 

@@ -47,18 +47,17 @@ ImguiRendererImpl init_imgui_render_impl(Renderer *renderer,
       .Instance = renderer->instance,
       .PhysicalDevice = renderer->physical_device_info.device,
       .Device = renderer->device,
-      //   .QueueFamily = g_QueueFamily,
       .Queue = renderer->graphics_queue,
       .PipelineCache = NULL,
       .DescriptorPool = ret.descriptor_pool,
-      .Subpass = 1,
+      .Subpass = 0,
       .MinImageCount = MAX_FRAMES_IN_FLIGHT,
       .ImageCount = MAX_FRAMES_IN_FLIGHT,
       .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
       .Allocator = NULL,
       .CheckVkResultFn = NULL,
   };
-  if (!ImGui_ImplVulkan_Init(&init_info, renderer->render_pass)) {
+  if (!ImGui_ImplVulkan_Init(&init_info, renderer->present_render_pass)) {
     fatalln("could not init imgui vulkan");
   }
 

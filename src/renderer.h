@@ -29,6 +29,8 @@ typedef struct {
   VkSemaphore render_finished;
   VkFence in_flight;
   VkCommandBuffer command_buffer;
+  VkFramebuffer first_bounce_framebuffer;
+  VkFramebuffer present_framebuffer;
 } PerFrameData;
 
 typedef struct {
@@ -61,21 +63,28 @@ typedef struct Renderer_t {
   FramebufferAttachment depth_attachment;
   FramebufferAttachment normal_attachment;
   FramebufferAttachment position_attachment;
+  FramebufferAttachment trace_output_attachment;
   VkSampler vec3_sampler;
 
   VkCommandPool command_pool;
 
   VkDescriptorPool descriptor_pool;
 
-  VkRenderPass render_pass;
+  VkRenderPass trace_render_pass;
   VkPipelineLayout first_bounce_pipeline_layout;
+  VkDescriptorSetLayout trace_descriptor_set_layout;
+  VkDescriptorSet trace_descriptor_set;
   VkPipeline first_bounce_pipeline;
+  VkPipelineLayout trace_pipeline_layout;
+  VkPipeline trace_pipeline;
 
+  VkRenderPass present_render_pass;
   VkDescriptorSetLayout present_descriptor_set_layout;
   VkDescriptorSet present_descriptor_set;
   VkPipelineLayout present_pipeline_layout;
   VkPipeline present_pipeline;
 
+  VkFramebuffer *trace_framebuffers;
   VkFramebuffer *swapchain_framebuffers;
 
   u32 frame;

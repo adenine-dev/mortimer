@@ -175,7 +175,7 @@ PhysicalDeviceInfo get_physical_device(VkInstance instance, SDL_Window *window,
                                            &format_count, formats);
       device_info.surface_format = formats[0];
       for (u32 i = 0; i < format_count; ++i) {
-        if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
+        if (formats[i].format == VK_FORMAT_B8G8R8A8_UNORM &&
             formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
           device_info.surface_format = formats[i];
           break;

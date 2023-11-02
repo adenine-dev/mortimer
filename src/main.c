@@ -105,6 +105,10 @@ int main(int argc, char **argv) {
     ImGui_ImplSDL3_NewFrame();
 
     igNewFrame();
+
+    // static bool open = true;
+    // igShowDemoWindow(&open);
+
     renderer_update(&renderer);
   }
 

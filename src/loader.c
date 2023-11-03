@@ -123,60 +123,98 @@ ObjMesh load_obj(const char *filename) {
   }
 
   ObjMesh mesh = {0};
+  if (attrib.num_normals == attrib.num_vertices) {
+    mesh.index_count = attrib.num_face_num_verts * 3;
+    mesh.vertex_count = attrib.num_vertices;
 
-  mesh.index_count = attrib.num_faces * 3;
-  mesh.vertex_count = attrib.num_face_num_verts * 3;
+    mesh.positions = malloc(sizeof(vec3) * mesh.vertex_count);
+    mesh.normals = malloc(sizeof(vec3) * mesh.vertex_count);
+    mesh.indicies = malloc(sizeof(u32) * mesh.index_count);
 
-  mesh.positions = malloc(sizeof(vec3) * mesh.vertex_count);
-  mesh.normals = malloc(sizeof(vec3) * mesh.vertex_count);
-
-  usize face_offset = 0;
-  for (unsigned int i = 0; i < attrib.num_face_num_verts; i++) {
-    if (attrib.face_num_verts[i] % 3 != 0) {
-      fatalln("non triangular face in obj file `%s`", filename);
+    for (u32 i = 0; i < mesh.vertex_count; i++) {
+      mesh.positions[i] =
+          vec3New(attrib.vertices[i * 3 + 0], attrib.vertices[i * 3 + 1],
+                  attrib.vertices[i * 3 + 2]);
     }
 
-    for (int j = 0; j < attrib.face_num_verts[i] / 3; ++j) {
-      tinyobj_vertex_index_t idxs[] = {
-          attrib.faces[face_offset + 3 * j + 0],
-          attrib.faces[face_offset + 3 * j + 1],
-          attrib.faces[face_offset + 3 * j + 2],
-      };
+    usize face_offset = 0;
+    for (unsigned int i = 0; i < attrib.num_face_num_verts; i++) {
+      if (attrib.face_num_verts[i] % 3 != 0) {
+        fatalln("non triangular face in obj file `%s`", filename);
+      }
 
-      for (u32 k = 0; k < 3; k++) {
-        int f_p = idxs[k].v_idx;
-        assert(f_p >= 0);
-        mesh.positions[3 * i + k] =
-            vec3New(attrib.vertices[3 * (usize)f_p + 0],
-                    attrib.vertices[3 * (usize)f_p + 1],
-                    attrib.vertices[3 * (usize)f_p + 2]);
+      for (int j = 0; j < attrib.face_num_verts[i] / 3; ++j) {
+        tinyobj_vertex_index_t idxs[] = {
+            attrib.faces[face_offset + 3 * j + 0],
+            attrib.faces[face_offset + 3 * j + 1],
+            attrib.faces[face_offset + 3 * j + 2],
+        };
+        for (u32 k = 0; k < 3; ++k) {
+          mesh.indicies[face_offset + k] = idxs[k].v_idx;
+          mesh.normals[idxs[k].v_idx] =
+              vec3Normalize(vec3New(attrib.normals[3 * idxs[k].vn_idx + 0],
+                                    attrib.normals[3 * idxs[k].vn_idx + 1],
+                                    attrib.normals[3 * idxs[k].vn_idx + 2]));
+        }
 
-        if (attrib.num_normals) {
-          int f_n = idxs[k].vn_idx;
-          assert(f_n >= 0);
-          mesh.normals[3 * i + k] =
-              vec3Normalize(vec3New(attrib.normals[3 * (usize)f_n + 0],
-                                    attrib.normals[3 * (usize)f_n + 1],
-                                    attrib.normals[3 * (usize)f_n + 2]));
+        face_offset += 3;
+      }
+    }
+  } else { // flat shade without index buffers
+    mesh.index_count = attrib.num_faces * 3;
+    mesh.vertex_count = attrib.num_face_num_verts * 3;
+
+    mesh.positions = malloc(sizeof(vec3) * mesh.vertex_count);
+    mesh.normals = malloc(sizeof(vec3) * mesh.vertex_count);
+
+    usize face_offset = 0;
+    for (unsigned int i = 0; i < attrib.num_face_num_verts; i++) {
+      if (attrib.face_num_verts[i] % 3 != 0) {
+        fatalln("non triangular face in obj file `%s`", filename);
+      }
+
+      for (int j = 0; j < attrib.face_num_verts[i] / 3; ++j) {
+        tinyobj_vertex_index_t idxs[] = {
+            attrib.faces[face_offset + 3 * j + 0],
+            attrib.faces[face_offset + 3 * j + 1],
+            attrib.faces[face_offset + 3 * j + 2],
+        };
+
+        for (u32 k = 0; k < 3; k++) {
+          int f_p = idxs[k].v_idx;
+          assert(f_p >= 0);
+          mesh.positions[3 * i + k] =
+              vec3New(attrib.vertices[3 * (usize)f_p + 0],
+                      attrib.vertices[3 * (usize)f_p + 1],
+                      attrib.vertices[3 * (usize)f_p + 2]);
+
+          if (attrib.num_normals) {
+            int f_n = idxs[k].vn_idx;
+            assert(f_n >= 0);
+            mesh.normals[3 * i + k] =
+                vec3Normalize(vec3New(attrib.normals[3 * (usize)f_n + 0],
+                                      attrib.normals[3 * (usize)f_n + 1],
+                                      attrib.normals[3 * (usize)f_n + 2]));
+          }
+        }
+
+        if (!attrib.num_normals) {
+          vec3 p0 = mesh.positions[3 * i + 0];
+          vec3 p1 = mesh.positions[3 * i + 1];
+          vec3 p2 = mesh.positions[3 * i + 2];
+          vec3 u = vec3Subtract(p1, p0);
+          vec3 v = vec3Subtract(p2, p0);
+
+          vec3 n = vec3Normalize(vec3New((u.y * v.z) - (u.z * v.y),
+                                         (u.z * v.x) - (u.x * v.z),
+                                         (u.x * v.y) - (u.y * v.x)));
+          mesh.normals[3 * i + 0] = mesh.normals[3 * i + 1] =
+              mesh.normals[3 * i + 2] = n;
         }
       }
 
-      if (!attrib.num_normals) {
-        vec3 p0 = mesh.positions[3 * i + 0];
-        vec3 p1 = mesh.positions[3 * i + 1];
-        vec3 p2 = mesh.positions[3 * i + 2];
-        vec3 u = vec3Subtract(p1, p0);
-        vec3 v = vec3Subtract(p2, p0);
-
-        vec3 n = vec3Normalize(vec3New((u.y * v.z) - (u.z * v.y),
-                                       (u.z * v.x) - (u.x * v.z),
-                                       (u.x * v.y) - (u.y * v.x)));
-        mesh.normals[3 * i + 0] = mesh.normals[3 * i + 1] =
-            mesh.normals[3 * i + 2] = n;
-      }
+      face_offset += (usize)attrib.face_num_verts[i];
     }
-
-    face_offset += (usize)attrib.face_num_verts[i];
   }
 
   tinyobj_attrib_free(&attrib);

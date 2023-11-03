@@ -35,7 +35,9 @@ typedef struct {
 
 typedef struct {
   vec3 position;
+  u32 _pad0;
   vec3 normal;
+  u32 _pad1;
 } Vertex;
 
 typedef struct {
@@ -101,8 +103,8 @@ typedef struct Renderer_t {
 
   VkBuffer vertex_buffer;
   VkDeviceMemory vertex_buffer_memory;
-  // VkBuffer index_buffer;
-  // VkDeviceMemory index_buffer_memory;
+  VkBuffer index_buffer;
+  VkDeviceMemory index_buffer_memory;
 
   ImguiRendererImpl imgui_impl;
 } Renderer;

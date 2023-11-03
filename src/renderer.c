@@ -550,13 +550,15 @@ typedef struct {
 } FirstBouncePushConstants;
 
 typedef struct {
+  mat4x4 view_matrix;
+  mat4x4 projection_matrix;
+  u32 vertex_count;
+  u32 index_count;
+} PathTracePushConstants;
+
+typedef struct {
   u32 mode;
 } PresentPushConstants;
-
-enum PresentMode {
-  PRESENT_MODE_COLOR = 0,
-  PRESENT_MODE_NORMAL = 1,
-};
 
 const u32 VALIDATION_LAYER_COUNT = 1;
 const char *VALIDATION_LAYERS[VALIDATION_LAYER_COUNT] = {
@@ -989,10 +991,11 @@ Renderer renderer_create(SDL_Window *window) {
   }
 
   { // create descriptor pool
-    const u32 pool_sizes_len = 2;
+    const u32 pool_sizes_len = 3;
     VkDescriptorPoolSize pool_sizes[pool_sizes_len] = {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
         {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 2},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
     };
 
     VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
@@ -1179,7 +1182,7 @@ Renderer renderer_create(SDL_Window *window) {
   }
 
   { // path trace pipeline
-    const u32 binding_count = 2;
+    const u32 binding_count = 4;
     VkDescriptorSetLayoutBinding bindings[binding_count] = {
         {
             .binding = 0,
@@ -1190,6 +1193,18 @@ Renderer renderer_create(SDL_Window *window) {
         {
             .binding = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 3,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
@@ -1246,13 +1261,13 @@ Renderer renderer_create(SDL_Window *window) {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1,
             .pSetLayouts = &renderer.trace_descriptor_set_layout,
-            // .pushConstantRangeCount = 1,
-            // .pPushConstantRanges =
-            //     &(VkPushConstantRange){
-            //         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-            //         .offset = 0,
-            //         .size = sizeof(FirstBouncePushConstants),
-            //     },
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges =
+                &(VkPushConstantRange){
+                    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                    .offset = 0,
+                    .size = sizeof(PathTracePushConstants),
+                },
         };
 
     ASSURE_VK(vkCreatePipelineLayout(renderer.device,
@@ -1609,14 +1624,26 @@ void recreate_swapchain(Renderer *self) {
   create_swapchain(self);
   create_framebuffers(self);
 
-  const u32 trace_input_descriptor_set_writes_count = 2;
+  const u32 trace_input_descriptor_set_writes_count = 4;
   VkWriteDescriptorSet trace_input_descriptor_set_writes
       [trace_input_descriptor_set_writes_count] = {
           {
               .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
               .dstSet = self->trace_descriptor_set,
+              .dstBinding = 0,
+              .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+              .descriptorCount = 1,
+              .pImageInfo =
+                  &(VkDescriptorImageInfo){
+                      .imageView = self->position_attachment.view,
+                      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      .sampler = self->vec3_sampler,
+                  },
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->trace_descriptor_set,
               .dstBinding = 1,
-              .dstArrayElement = 0,
               .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
               .descriptorCount = 1,
               .pImageInfo =
@@ -1629,17 +1656,30 @@ void recreate_swapchain(Renderer *self) {
           {
               .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
               .dstSet = self->trace_descriptor_set,
-              .dstBinding = 0,
-              .dstArrayElement = 0,
-              .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+              .dstBinding = 2,
+              .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
               .descriptorCount = 1,
-              .pImageInfo =
-                  &(VkDescriptorImageInfo){
-                      .imageView = self->position_attachment.view,
-                      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                      .sampler = self->vec3_sampler,
+              .pBufferInfo =
+                  &(VkDescriptorBufferInfo){
+                      .buffer = self->vertex_buffer,
+                      .offset = 0,
+                      .range = VK_WHOLE_SIZE,
                   },
-          }};
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->trace_descriptor_set,
+              .dstBinding = 3,
+              .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+              .descriptorCount = 1,
+              .pBufferInfo =
+                  &(VkDescriptorBufferInfo){
+                      .buffer = self->index_buffer,
+                      .offset = 0,
+                      .range = VK_WHOLE_SIZE,
+                  },
+          },
+      };
   vkUpdateDescriptorSets(self->device, trace_input_descriptor_set_writes_count,
                          trace_input_descriptor_set_writes, 0, NULL);
 
@@ -1714,6 +1754,11 @@ void renderer_destroy(Renderer *self) {
   if (self->vertex_buffer != VK_NULL_HANDLE) {
     vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
     vkFreeMemory(self->device, self->vertex_buffer_memory, NULL);
+  }
+
+  if (self->index_buffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(self->device, self->index_buffer, NULL);
+    vkFreeMemory(self->device, self->index_buffer_memory, NULL);
   }
 
   for (usize i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -1823,25 +1868,37 @@ BufferResult create_buffer(Renderer *self, u32 size, void *data,
 }
 
 void renderer_set_object(Renderer *self, u32 vertex_count, Vertex *vb,
-                         u32 _index_count, u32 *_ib) {
+                         u32 index_count, u32 *ib) {
   vkDeviceWaitIdle(self->device);
 
   self->vertex_count = vertex_count;
   self->vb = vb;
-  self->index_count = _index_count;
-  self->ib = _ib;
+  self->index_count = index_count;
+  self->ib = ib;
 
   if (self->vertex_buffer != VK_NULL_HANDLE) {
     vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
     vkFreeMemory(self->device, self->vertex_buffer_memory, NULL);
   }
-  // if (self->index_buffer != VK_NULL_HANDLE)
-  //   vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
+  if (self->index_buffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(self->device, self->index_buffer, NULL);
+    vkFreeMemory(self->device, self->index_buffer_memory, NULL);
+    self->index_buffer = VK_NULL_HANDLE;
+  }
 
   BufferResult res = create_buffer(self, vertex_count * sizeof(Vertex), vb,
-                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
   self->vertex_buffer = res.buffer;
   self->vertex_buffer_memory = res.memory;
+
+  if (ib) {
+    res = create_buffer(self, index_count * sizeof(u32), ib,
+                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    self->index_buffer = res.buffer;
+    self->index_buffer_memory = res.memory;
+  }
 }
 
 void renderer_draw_gui(Renderer *self) {
@@ -1933,16 +1990,25 @@ void renderer_update(Renderer *self) {
   mat4x4 camera_matrix;
   mat4x4MultiplyMatrix(camera_matrix, self->camera_view,
                        self->camera_projection);
+  FirstBouncePushConstants first_bounce_push_constants = {};
+  memcpy(first_bounce_push_constants.camera_matrix, camera_matrix,
+         sizeof(mat4x4));
 
-  vkCmdPushConstants(cmdbuffer, self->first_bounce_pipeline_layout,
-                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mat4x4),
-                     &camera_matrix);
+  vkCmdPushConstants(
+      cmdbuffer, self->first_bounce_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+      0, sizeof(FirstBouncePushConstants), &first_bounce_push_constants);
 
   VkBuffer buffers[] = {self->vertex_buffer};
   VkDeviceSize offsets[] = {0};
   vkCmdBindVertexBuffers(cmdbuffer, 0, 1, buffers, offsets);
 
-  vkCmdDraw(cmdbuffer, self->vertex_count, 1, 0, 0);
+  if (self->index_buffer != VK_NULL_HANDLE) {
+    vkCmdBindIndexBuffer(cmdbuffer, self->index_buffer, 0,
+                         VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmdbuffer, self->index_count, 1, 0, 0, 0);
+  } else {
+    vkCmdDraw(cmdbuffer, self->vertex_count, 1, 0, 0);
+  }
 
   vkCmdNextSubpass(cmdbuffer, VK_SUBPASS_CONTENTS_INLINE);
   vkCmdBindDescriptorSets(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1951,6 +2017,19 @@ void renderer_update(Renderer *self) {
 
   vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     self->trace_pipeline);
+  PathTracePushConstants path_trace_push_constants = {
+      .index_count = self->index_count,
+      .vertex_count = self->vertex_count,
+  };
+  memcpy(path_trace_push_constants.view_matrix, self->camera_view,
+         sizeof(mat4x4));
+  memcpy(path_trace_push_constants.projection_matrix, self->camera_projection,
+         sizeof(mat4x4));
+
+  vkCmdPushConstants(
+      cmdbuffer, self->trace_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+      sizeof(PathTracePushConstants), &path_trace_push_constants);
+
   vkCmdDraw(cmdbuffer, 3, 1, 0, 0);
   vkCmdEndRenderPass(cmdbuffer);
 

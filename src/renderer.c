@@ -465,11 +465,11 @@ void create_swapchain(Renderer *self) {
       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
 
   self->normal_attachment = create_framebuffer_attachment(
-      self, VK_FORMAT_R16G16B16A16_SFLOAT,
+      self, VK_FORMAT_R32G32B32A32_SFLOAT,
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
           VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
   self->position_attachment = create_framebuffer_attachment(
-      self, VK_FORMAT_R16G16B16A16_SFLOAT,
+      self, VK_FORMAT_R32G32B32A32_SFLOAT,
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
           VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
 
@@ -556,6 +556,7 @@ typedef struct {
   u32 vertex_count;
   u32 index_count;
   u32 node_count;
+  u32 frame;
 } PathTracePushConstants;
 
 typedef struct {
@@ -1945,8 +1946,8 @@ void renderer_draw_gui(Renderer *self) {
 
 void renderer_update(Renderer *self) {
   imgui_renderer_begin();
-  PerFrameData *frame = &self->frame_data[self->frame];
-  self->frame = (self->frame + 1) % MAX_FRAMES_IN_FLIGHT;
+  PerFrameData *frame = &self->frame_data[self->frame % MAX_FRAMES_IN_FLIGHT];
+  self->frame = (self->frame + 1);
 
   vkWaitForFences(self->device, 1, &frame->in_flight, VK_TRUE, UINT64_MAX);
 
@@ -2053,6 +2054,7 @@ void renderer_update(Renderer *self) {
       .index_count = self->mesh->index_count,
       .vertex_count = self->mesh->vertex_count,
       .node_count = self->mesh->bvh_node_count,
+      .frame = self->frame,
   };
   memcpy(path_trace_push_constants.view_matrix, self->camera_view,
          sizeof(mat4x4));

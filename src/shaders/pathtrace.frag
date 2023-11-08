@@ -40,6 +40,7 @@ layout(push_constant) uniform PushConstants {
   uint vertex_count;
   uint index_count;
   uint node_count;
+  uint frame;
 }
 constants;
 
@@ -57,8 +58,8 @@ Ray create_ray(vec2 uv) {
   return Ray(eye, view_dir);
 }
 
-const float EPSILON = 1e-6;
 float ray_triangle_intersection(Ray ray, vec3 v0, vec3 v1, vec3 v2) {
+  const float EPSILON = 1e-7;
   // Möller–Trumbore intersection
   vec3 edge1 = v1 - v0;
   vec3 edge2 = v2 - v0;
@@ -100,10 +101,33 @@ bool ray_aabb_intersection(Ray ray, vec3 aabb_min, vec3 aabb_max) {
   return near < far;
 }
 
-void main() {
-  vec2 uv = i_uv * vec2(1.0, -1.0) + vec2(0.0, 1.0);  // flip viewport
-  Ray ray = create_ray(uv);
+uvec4 rng_seed;
+ivec2 rng_p;
+void init_random(vec2 p, uint frame) {
+  rng_p = ivec2(p);
+  rng_seed = uvec4(p, uint(frame), uint(p.x) + uint(p.y));
+}
 
+float sample_1d() {
+  rng_seed = rng_seed * 1664525u + 1013904223u;
+  rng_seed.x += rng_seed.y * rng_seed.w;
+  rng_seed.y += rng_seed.z * rng_seed.x;
+  rng_seed.z += rng_seed.x * rng_seed.y;
+  rng_seed.w += rng_seed.y * rng_seed.z;
+  rng_seed = rng_seed ^ (rng_seed >> 16u);
+  rng_seed.x += rng_seed.y * rng_seed.w;
+  rng_seed.y += rng_seed.z * rng_seed.x;
+  rng_seed.z += rng_seed.x * rng_seed.y;
+  rng_seed.w += rng_seed.y * rng_seed.z;
+  return float(rng_seed.x) / float(0xffffffffu);
+}
+
+struct SceneIntersection {
+  float t;
+  uint triangle_idx;
+};
+
+SceneIntersection ray_scene_intersect(Ray ray) {
   const uint TO_VISIT_LEN = 32;
   uint to_visit[TO_VISIT_LEN];
   uint node_idx = constants.node_count - 1;
@@ -143,18 +167,112 @@ void main() {
     node_idx = to_visit[to_visit_idx--];
   }
 
-  vec3 colors[12] =
-      vec3[12](vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0),
-               vec3(0.0, 1.0, 1.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 1.0),
-
-               vec3(1.0, 0.5, 0.5), vec3(1.0, 1.0, 0.5), vec3(0.5, 1.0, 0.5),
-               vec3(0.5, 1.0, 1.0), vec3(0.5, 0.5, 1.0), vec3(1.0, 0.5, 1.0));
-  if (triangle_idx != 0xffffffff) {
-    // col = vec4(0.9, 0.6, 1.0, 1.0);
-    col = vec4(colors[triangle_idx % 12], 1.0);
-  } else if (subpassLoad(sampler_normal).xyz != vec3(0.0)) {
-    col = vec4(0.01, 0.01, 0.01, 1.0);
+  if (triangle_idx == 0xffffffff) {
+    return SceneIntersection(-1.0, triangle_idx);
   }
 
-  // col = vec4(vec3(float(intersection_count), 0.0, 0.0), 1.0);
+  return SceneIntersection(t_max, triangle_idx);
+}
+
+vec3 escaped_ray_color(Ray ray) {
+  // return vec3(1.0, 0.4, 1.0);
+  return mix(vec3((ray.d.y + 1) * 0.5), vec3(1.0, 1.0, 1.0),
+             vec3(1.0, 0.4, 1.0));
+}
+
+vec3 get_face_normal(uint i, vec3 p) {
+  Vertex v0 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 0]];
+  Vertex v1 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 1]];
+  Vertex v2 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 2]];
+
+  vec3 f0 = v0.position - p;
+  vec3 f1 = v1.position - p;
+  vec3 f2 = v2.position - p;
+
+  float det =
+      length(cross(v0.position - v1.position, v0.position - v2.position));
+  float b0 = length(cross(f1, f2)) / det;
+  float b1 = length(cross(f2, f0)) / det;
+  float b2 = length(cross(f0, f1)) / det;
+
+  return b0 * v0.normal + b1 * v1.normal + b2 * v2.normal;
+}
+
+vec3 face_forward(vec3 n, vec3 v) { return 0.0 > dot(n, v) ? -n : n; }
+
+const float PI = 3.14159265359;
+
+vec2 square_to_uniform_disk_concentric(vec2 u) {
+  u = 2.0 * u - vec2(1.0);
+  if (u.x == 0.0 && u.y == 0.0) {
+    return vec2(0.0);
+  }
+
+  float r;
+  float theta;
+  if (abs(u.x) > abs(u.y)) {
+    r = u.x;
+    theta = PI / 4.0 * (u.y / u.x);
+  } else {
+    r = u.y;
+    theta = PI / 2.0 - PI / 4.0 * (u.x / u.y);
+  };
+
+  return r * vec2(cos(theta), sin(theta));
+}
+
+vec3 square_to_cosine_hemisphere(vec2 u) {
+  vec2 d = square_to_uniform_disk_concentric(u);
+  float z = sqrt(max(0.0, 1.0 - d.x * d.x - d.y * d.y));
+  return vec3(d, z);
+}
+
+void main() {
+  vec2 uv = i_uv * vec2(1.0, -1.0) + vec2(0.0, 1.0);  // flip viewport
+  init_random(gl_FragCoord.xy, constants.frame);
+
+  vec3 normal = subpassLoad(sampler_normal).xyz;
+  if (normal == vec3(0.0)) {
+    col = vec4(escaped_ray_color(create_ray(uv)), 1.0);
+    return;
+  }
+
+  vec3 film = vec3(0.0);
+  const uint SAMPLES = 1;
+  for (uint i = 0; i < SAMPLES; i++) {
+    vec3 position = subpassLoad(sampler_position).xyz;
+
+    const vec3 surface_color = vec3(0.4, 0.4, 0.8);
+
+    const uint MAX_BOUNCES = 2;
+    vec3 surface_reflectance = surface_color;
+    const float EPSILON = 1e-5;
+
+    Ray ray =
+        Ray(position + normal * EPSILON,
+            normalize(face_forward(
+                square_to_cosine_hemisphere(vec2(sample_1d(), sample_1d())),
+                normal)));
+    vec3 contributed = vec3(0.0);
+    uint j;
+    for (j = 0; j < MAX_BOUNCES; j++) {
+      SceneIntersection intersection = ray_scene_intersect(ray);
+      if (intersection.triangle_idx != 0xffffffff) {
+        surface_reflectance *= surface_color;
+        position = (ray.o + ray.d * intersection.t);
+        normal = get_face_normal(intersection.triangle_idx, position);
+        ray.o = position + normal * EPSILON;
+        ray.d = normalize(face_forward(
+            square_to_cosine_hemisphere(vec2(sample_1d(), sample_1d())),
+            -ray.d));
+      } else {
+        contributed = surface_reflectance * escaped_ray_color(ray);
+        break;
+      }
+    }
+
+    film += contributed;
+  }
+
+  col = vec4(film / SAMPLES, 1.0);
 }

@@ -6,6 +6,7 @@
 
 #include "SDL_video.h"
 #include "ccVector.h"
+#include "trimesh.h"
 #include <vulkan/vulkan_core.h>
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
@@ -554,6 +555,7 @@ typedef struct {
   mat4x4 projection_matrix;
   u32 vertex_count;
   u32 index_count;
+  u32 node_count;
 } PathTracePushConstants;
 
 typedef struct {
@@ -995,7 +997,7 @@ Renderer renderer_create(SDL_Window *window) {
     VkDescriptorPoolSize pool_sizes[pool_sizes_len] = {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
         {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
     };
 
     VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
@@ -1182,7 +1184,7 @@ Renderer renderer_create(SDL_Window *window) {
   }
 
   { // path trace pipeline
-    const u32 binding_count = 4;
+    const u32 binding_count = 5;
     VkDescriptorSetLayoutBinding bindings[binding_count] = {
         {
             .binding = 0,
@@ -1204,6 +1206,12 @@ Renderer renderer_create(SDL_Window *window) {
         },
         {
             .binding = 3,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 4,
             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1624,7 +1632,7 @@ void recreate_swapchain(Renderer *self) {
   create_swapchain(self);
   create_framebuffers(self);
 
-  const u32 trace_input_descriptor_set_writes_count = 4;
+  const u32 trace_input_descriptor_set_writes_count = 5;
   VkWriteDescriptorSet trace_input_descriptor_set_writes
       [trace_input_descriptor_set_writes_count] = {
           {
@@ -1675,6 +1683,19 @@ void recreate_swapchain(Renderer *self) {
               .pBufferInfo =
                   &(VkDescriptorBufferInfo){
                       .buffer = self->index_buffer,
+                      .offset = 0,
+                      .range = VK_WHOLE_SIZE,
+                  },
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->trace_descriptor_set,
+              .dstBinding = 4,
+              .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+              .descriptorCount = 1,
+              .pBufferInfo =
+                  &(VkDescriptorBufferInfo){
+                      .buffer = self->bvh_buffer,
                       .offset = 0,
                       .range = VK_WHOLE_SIZE,
                   },
@@ -1759,6 +1780,11 @@ void renderer_destroy(Renderer *self) {
   if (self->index_buffer != VK_NULL_HANDLE) {
     vkDestroyBuffer(self->device, self->index_buffer, NULL);
     vkFreeMemory(self->device, self->index_buffer_memory, NULL);
+  }
+
+  if (self->bvh_buffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(self->device, self->bvh_buffer, NULL);
+    vkFreeMemory(self->device, self->bvh_buffer_memory, NULL);
   }
 
   for (usize i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -1867,38 +1893,44 @@ BufferResult create_buffer(Renderer *self, u32 size, void *data,
   };
 }
 
-void renderer_set_object(Renderer *self, u32 vertex_count, Vertex *vb,
-                         u32 index_count, u32 *ib) {
+void renderer_set_object(Renderer *self, TriangleMesh *mesh) {
   vkDeviceWaitIdle(self->device);
 
-  self->vertex_count = vertex_count;
-  self->vb = vb;
-  self->index_count = index_count;
-  self->ib = ib;
+  self->mesh = mesh;
 
   if (self->vertex_buffer != VK_NULL_HANDLE) {
     vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
     vkFreeMemory(self->device, self->vertex_buffer_memory, NULL);
+    self->vertex_buffer = VK_NULL_HANDLE;
   }
   if (self->index_buffer != VK_NULL_HANDLE) {
     vkDestroyBuffer(self->device, self->index_buffer, NULL);
     vkFreeMemory(self->device, self->index_buffer_memory, NULL);
     self->index_buffer = VK_NULL_HANDLE;
   }
+  if (self->bvh_buffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(self->device, self->bvh_buffer, NULL);
+    vkFreeMemory(self->device, self->bvh_buffer_memory, NULL);
+    self->bvh_buffer = VK_NULL_HANDLE;
+  }
 
-  BufferResult res = create_buffer(self, vertex_count * sizeof(Vertex), vb,
-                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  BufferResult res = create_buffer(
+      self, self->mesh->vertex_count * sizeof(Vertex), self->mesh->vertices,
+      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
   self->vertex_buffer = res.buffer;
   self->vertex_buffer_memory = res.memory;
 
-  if (ib) {
-    res = create_buffer(self, index_count * sizeof(u32), ib,
-                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    self->index_buffer = res.buffer;
-    self->index_buffer_memory = res.memory;
-  }
+  res = create_buffer(
+      self, self->mesh->index_count * sizeof(u32), self->mesh->indices,
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  self->index_buffer = res.buffer;
+  self->index_buffer_memory = res.memory;
+
+  res =
+      create_buffer(self, self->mesh->bvh_node_count * sizeof(BvhNode),
+                    self->mesh->bvh_nodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  self->bvh_buffer = res.buffer;
+  self->bvh_buffer_memory = res.memory;
 }
 
 void renderer_draw_gui(Renderer *self) {
@@ -2005,9 +2037,9 @@ void renderer_update(Renderer *self) {
   if (self->index_buffer != VK_NULL_HANDLE) {
     vkCmdBindIndexBuffer(cmdbuffer, self->index_buffer, 0,
                          VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmdbuffer, self->index_count, 1, 0, 0, 0);
+    vkCmdDrawIndexed(cmdbuffer, self->mesh->index_count, 1, 0, 0, 0);
   } else {
-    vkCmdDraw(cmdbuffer, self->vertex_count, 1, 0, 0);
+    vkCmdDraw(cmdbuffer, self->mesh->vertex_count, 1, 0, 0);
   }
 
   vkCmdNextSubpass(cmdbuffer, VK_SUBPASS_CONTENTS_INLINE);
@@ -2018,8 +2050,9 @@ void renderer_update(Renderer *self) {
   vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     self->trace_pipeline);
   PathTracePushConstants path_trace_push_constants = {
-      .index_count = self->index_count,
-      .vertex_count = self->vertex_count,
+      .index_count = self->mesh->index_count,
+      .vertex_count = self->mesh->vertex_count,
+      .node_count = self->mesh->bvh_node_count,
   };
   memcpy(path_trace_push_constants.view_matrix, self->camera_view,
          sizeof(mat4x4));

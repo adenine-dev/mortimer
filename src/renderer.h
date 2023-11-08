@@ -8,6 +8,7 @@
 
 #include "imgui_renderer.h"
 #include "log.h"
+#include "trimesh.h"
 #include "types.h"
 
 typedef struct {
@@ -32,13 +33,6 @@ typedef struct {
   VkFramebuffer first_bounce_framebuffer;
   VkFramebuffer present_framebuffer;
 } PerFrameData;
-
-typedef struct {
-  vec3 position;
-  u32 _pad0;
-  vec3 normal;
-  u32 _pad1;
-} Vertex;
 
 typedef struct {
   VkImage image;
@@ -96,15 +90,22 @@ typedef struct Renderer_t {
   mat4x4 camera_projection;
   f32 camera_fov;
 
-  u32 vertex_count;
-  Vertex *vb;
-  u32 index_count;
-  u32 *ib;
+  TriangleMesh *mesh;
+  // u32 vertex_count;
+  // Vertex *vb;
+  // u32 index_count;
+  // u32 *ib;
+  // u32 bvh_node_count;
+  // BvhNode *bvh_nodes;
 
   VkBuffer vertex_buffer;
   VkDeviceMemory vertex_buffer_memory;
+
   VkBuffer index_buffer;
   VkDeviceMemory index_buffer_memory;
+
+  VkBuffer bvh_buffer;
+  VkDeviceMemory bvh_buffer_memory;
 
   ImguiRendererImpl imgui_impl;
 } Renderer;
@@ -114,8 +115,7 @@ void renderer_destroy(Renderer *self);
 void renderer_update(Renderer *self);
 void renderer_resize(Renderer *self, u32 width, u32 height);
 
-void renderer_set_object(Renderer *self, u32 vertex_count, Vertex *vb,
-                         u32 index_count, u32 *ib);
+void renderer_set_object(Renderer *self, TriangleMesh *mesh);
 
 #define ASSURE_VK(expr)                                                        \
   {                                                                            \

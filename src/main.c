@@ -13,6 +13,7 @@
 #include "log.h"
 #include "maths.h"
 #include "renderer.h"
+#include "trimesh.h"
 #include "types.h"
 
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
@@ -36,6 +37,7 @@ int main(int argc, char **argv) {
   Renderer renderer = renderer_create(window);
 
   ObjMesh obj = load_obj("assets/suzanne.obj");
+  // ObjMesh obj = load_obj("assets/xyzrgb_dragon.obj");
   Vertex *vb = malloc(obj.vertex_count * sizeof(Vertex));
   for (usize i = 0; i < obj.vertex_count; i++) {
     vb[i] = (Vertex){
@@ -43,8 +45,11 @@ int main(int argc, char **argv) {
         .normal = obj.normals[i],
     };
   }
-  renderer_set_object(&renderer, obj.vertex_count, vb, obj.index_count,
-                      obj.indicies);
+  TriangleMesh mesh =
+      trimesh_new(vb, obj.vertex_count, obj.indicies, obj.index_count);
+  renderer_set_object(&renderer, &mesh);
+  // renderer_set_object(&renderer, obj.vertex_count, vb, obj.index_count,
+  //                     obj.indicies);
 
   SDL_Event event;
   bool running = true;
@@ -68,7 +73,7 @@ int main(int argc, char **argv) {
       case SDL_EVENT_MOUSE_WHEEL: {
         if (!igGetIO()->WantCaptureMouse) {
           radius += event.wheel.y;
-          radius = clamp(radius, 0.1, 10.0);
+          radius = clamp(radius, 0.1, 500.0);
           eye = vec3Multiply(vec3Normalize(eye), radius);
         }
       } break;
@@ -113,6 +118,7 @@ int main(int argc, char **argv) {
   }
 
   renderer_destroy(&renderer);
+  trimesh_destroy(mesh);
 
   SDL_DestroyWindow(window);
   SDL_Quit();

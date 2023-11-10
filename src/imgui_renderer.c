@@ -210,13 +210,14 @@ ImguiRendererImpl init_imgui_render_impl(Renderer *renderer,
   return ret;
 }
 
-void imgui_renderer_begin() {
+void imgui_renderer_begin(Renderer *renderer) {
   igBegin("Properties", NULL, 0);
   static bool debug_show = true;
   if (igCollapsingHeader_BoolPtr("Debug", NULL,
                                  ImGuiTreeNodeFlags_DefaultOpen)) {
     igText("Application average %.3f ms/frame (%.1f FPS)",
            1000.0f / igGetIO()->Framerate, igGetIO()->Framerate);
+    igText("Accumulated frames: %u", renderer->accumulated_frames);
   }
 }
 

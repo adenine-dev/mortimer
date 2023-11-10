@@ -274,5 +274,6 @@ void main() {
     film += contributed;
   }
 
-  col = vec4(film / SAMPLES, 1.0);
+  vec4 film_color = vec4(film / SAMPLES, 1.0);
+  col = film_color;
 }

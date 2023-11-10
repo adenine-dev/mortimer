@@ -20,7 +20,6 @@ typedef struct {
   VkSurfaceFormatKHR surface_format;
   VkExtent2D swapchain_extent;
   VkFormat depth_format;
-
 } PhysicalDeviceInfo;
 
 static const u32 MAX_FRAMES_IN_FLIGHT = 2;
@@ -60,6 +59,7 @@ typedef struct Renderer_t {
   FramebufferAttachment normal_attachment;
   FramebufferAttachment position_attachment;
   FramebufferAttachment trace_output_attachment;
+  FramebufferAttachment trace_accumulation_attachment;
   VkSampler vec3_sampler;
 
   VkCommandPool command_pool;
@@ -68,11 +68,15 @@ typedef struct Renderer_t {
 
   VkRenderPass trace_render_pass;
   VkPipelineLayout first_bounce_pipeline_layout;
+  VkPipeline first_bounce_pipeline;
   VkDescriptorSetLayout trace_descriptor_set_layout;
   VkDescriptorSet trace_descriptor_set;
-  VkPipeline first_bounce_pipeline;
   VkPipelineLayout trace_pipeline_layout;
   VkPipeline trace_pipeline;
+  VkDescriptorSetLayout accumulate_descriptor_set_layout;
+  VkDescriptorSet accumulate_descriptor_set;
+  VkPipelineLayout accumulate_pipeline_layout;
+  VkPipeline accumulate_pipeline;
 
   VkRenderPass present_render_pass;
   VkDescriptorSetLayout present_descriptor_set_layout;
@@ -89,14 +93,9 @@ typedef struct Renderer_t {
   mat4x4 camera_view;
   mat4x4 camera_projection;
   f32 camera_fov;
+  u32 accumulated_frames;
 
   TriangleMesh *mesh;
-  // u32 vertex_count;
-  // Vertex *vb;
-  // u32 index_count;
-  // u32 *ib;
-  // u32 bvh_node_count;
-  // BvhNode *bvh_nodes;
 
   VkBuffer vertex_buffer;
   VkDeviceMemory vertex_buffer_memory;

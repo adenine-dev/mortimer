@@ -36,8 +36,8 @@ int main(int argc, char **argv) {
 
   Renderer renderer = renderer_create(window);
 
-  ObjMesh obj = load_obj("assets/suzanne.obj");
-  // ObjMesh obj = load_obj("assets/xyzrgb_dragon.obj");
+  // ObjMesh obj = load_obj("assets/suzanne.obj");
+  ObjMesh obj = load_obj("assets/xyzrgb_dragon.obj");
   Vertex *vb = malloc(obj.vertex_count * sizeof(Vertex));
   for (usize i = 0; i < obj.vertex_count; i++) {
     vb[i] = (Vertex){
@@ -54,10 +54,11 @@ int main(int argc, char **argv) {
   SDL_Event event;
   bool running = true;
 
-  vec3 center = vec3New(0.0, 1.0, 0.0);
-  vec3 eye = vec3Add(center, vec3New(0.0, 0.0, 2.0));
+  vec3 center = vec3New(0.0, 2.0, 0.0);
+  vec3 eye = vec3Add(center, vec3New(7.0, 2.5, -7.0));
   const vec3 up = vec3New(0.0, 1.0, 0.0);
-  f32 radius = 2.0;
+  f32 radius = vec3Length(eye);
+  bool camera_updated = true;
 
   while (running) {
     while (SDL_PollEvent(&event)) {
@@ -75,6 +76,7 @@ int main(int argc, char **argv) {
           radius += event.wheel.y;
           radius = clamp(radius, 0.1, 500.0);
           eye = vec3Multiply(vec3Normalize(eye), radius);
+          camera_updated = true;
         }
       } break;
       case SDL_EVENT_MOUSE_MOTION: {
@@ -98,12 +100,17 @@ int main(int argc, char **argv) {
             eye = vec3Add(vec3Multiply(right, dA.x), eye);
             eye = vec3Add(vec3Multiply(up, dA.y), eye);
             eye = vec3Multiply(vec3Normalize(eye), radius);
+            camera_updated = true;
           }
         }
       } break;
       }
 
-      mat4x4LookAt(renderer.camera_view, vec3Add(eye, center), center, up);
+      if (camera_updated) {
+        camera_updated = false;
+        mat4x4LookAt(renderer.camera_view, vec3Add(eye, center), center, up);
+        renderer.accumulated_frames = 0;
+      }
     }
 
     ImGui_ImplVulkan_NewFrame();

@@ -17,6 +17,7 @@
 #include "renderer.h"
 #include "types.h"
 
+#include "shaders/embed/accumulate_frag_spv.h"
 #include "shaders/embed/first_bounce_frag_spv.h"
 #include "shaders/embed/first_bounce_vert_spv.h"
 #include "shaders/embed/fullscreen_quad_vert_spv.h"
@@ -382,6 +383,42 @@ create_framebuffer_attachment(Renderer *renderer, VkFormat format,
   return fba;
 }
 
+VkCommandBuffer begin_immediate_submit(Renderer *self) {
+  VkCommandBufferAllocateInfo allocInfo = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandPool = self->command_pool,
+      .commandBufferCount = 1,
+  };
+
+  VkCommandBuffer command_buffer;
+  vkAllocateCommandBuffers(self->device, &allocInfo, &command_buffer);
+
+  VkCommandBufferBeginInfo beginInfo = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+
+  vkBeginCommandBuffer(command_buffer, &beginInfo);
+
+  return command_buffer;
+}
+
+void end_immediate_submit(Renderer *self, VkCommandBuffer command_buffer) {
+  vkEndCommandBuffer(command_buffer);
+
+  VkSubmitInfo submitInfo = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &command_buffer,
+  };
+
+  vkQueueSubmit(self->graphics_queue, 1, &submitInfo, VK_NULL_HANDLE);
+  vkQueueWaitIdle(self->graphics_queue);
+
+  vkFreeCommandBuffers(self->device, self->command_pool, 1, &command_buffer);
+}
+
 void create_swapchain(Renderer *self) {
   VkSwapchainCreateInfoKHR swapchain_create_info = (VkSwapchainCreateInfoKHR){
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -477,6 +514,37 @@ void create_swapchain(Renderer *self) {
       self, VK_FORMAT_R32G32B32A32_SFLOAT,
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
           VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
+  self->trace_accumulation_attachment = create_framebuffer_attachment(
+      self, VK_FORMAT_R32G32B32A32_SFLOAT,
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+          VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
+
+  // transition the trace accumulation attachment
+  {
+    VkCommandBuffer cmdbuffer = begin_immediate_submit(self);
+    VkImageMemoryBarrier image_memory_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = self->trace_accumulation_attachment.image,
+        .subresourceRange =
+            (VkImageSubresourceRange){
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        .srcAccessMask = 0,
+        .dstAccessMask = 0,
+    };
+    vkCmdPipelineBarrier(cmdbuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, NULL, 0, NULL,
+                         1, &image_memory_barrier);
+    end_immediate_submit(self, cmdbuffer);
+  }
 }
 
 void create_framebuffers(Renderer *self) {
@@ -492,11 +560,12 @@ void create_framebuffers(Renderer *self) {
   for (u32 i = 0; i < self->swapchain_image_count; i++) {
     // trace framebuffer
     {
-      const u32 attachment_count = 4;
+      const u32 attachment_count = 5;
       VkImageView attachments[attachment_count] = {
           self->trace_output_attachment.view,
           self->position_attachment.view,
           self->normal_attachment.view,
+          self->trace_accumulation_attachment.view,
           self->depth_attachment.view,
       };
 
@@ -540,6 +609,7 @@ void create_framebuffers(Renderer *self) {
 }
 
 void renderer_set_or_update_camera(Renderer *self) {
+  self->accumulated_frames = 0;
   mat4x4Perspective(self->camera_projection, self->camera_fov * (M_PI / 180.0),
                     (f32)self->physical_device_info.swapchain_extent.width /
                         (f32)self->physical_device_info.swapchain_extent.height,
@@ -562,6 +632,12 @@ typedef struct {
 typedef struct {
   u32 mode;
 } PresentPushConstants;
+
+typedef struct {
+  u32 frame;
+  u32 _pad0;
+  bool dirty;
+} AccumulatePushConstants;
 
 const u32 VALIDATION_LAYER_COUNT = 1;
 const char *VALIDATION_LAYERS[VALIDATION_LAYER_COUNT] = {
@@ -725,6 +801,19 @@ Renderer renderer_create(SDL_Window *window) {
     free(device_extensions);
   }
 
+  { // create command pool
+    VkCommandPoolCreateInfo command_pool_create_info =
+        (VkCommandPoolCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .queueFamilyIndex =
+                renderer.physical_device_info.graphics_family_index,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        };
+
+    ASSURE_VK(vkCreateCommandPool(renderer.device, &command_pool_create_info,
+                                  NULL, &renderer.command_pool));
+  }
+
   { // create swapchain
     renderer.swapchain_image_count =
         renderer.physical_device_info.surface_capabilities.minImageCount + 1;
@@ -740,17 +829,6 @@ Renderer renderer_create(SDL_Window *window) {
 
   VkCommandBuffer command_buffers[MAX_FRAMES_IN_FLIGHT];
   { // create command buffers
-    VkCommandPoolCreateInfo command_pool_create_info =
-        (VkCommandPoolCreateInfo){
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .queueFamilyIndex =
-                renderer.physical_device_info.graphics_family_index,
-            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        };
-
-    ASSURE_VK(vkCreateCommandPool(renderer.device, &command_pool_create_info,
-                                  NULL, &renderer.command_pool));
-
     VkCommandBufferAllocateInfo command_buffer_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = renderer.command_pool,
@@ -796,6 +874,17 @@ Renderer renderer_create(SDL_Window *window) {
         .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
+    VkAttachmentDescription accumulation_attachment_desc = {
+        .format = renderer.trace_accumulation_attachment.format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .finalLayout = VK_IMAGE_LAYOUT_GENERAL,
+    };
+
     VkAttachmentDescription depth_attachment_desc = {
         .format = renderer.physical_device_info.depth_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -808,7 +897,7 @@ Renderer renderer_create(SDL_Window *window) {
     };
 
     VkAttachmentReference depth_attachment_ref = {
-        .attachment = 3,
+        .attachment = 4,
         .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
@@ -829,7 +918,20 @@ Renderer renderer_create(SDL_Window *window) {
             {1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, // position
             {2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, // normal
         };
-    const u32 subpass_desc_count = 2;
+
+    const u32 accumulate_attachment_count = 1;
+    VkAttachmentReference
+        accumulate_subpass_attachment_refs[trace_attachment_count] = {
+            {3, VK_IMAGE_LAYOUT_GENERAL},
+        };
+
+    const u32 accumulate_input_attachment_count = 2;
+    VkAttachmentReference
+        accumulate_input_attachment_refs[accumulate_input_attachment_count] = {
+            {0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, // frame
+            {3, VK_IMAGE_LAYOUT_GENERAL},                  // accumulation
+        };
+    const u32 subpass_desc_count = 3;
     VkSubpassDescription subpass_descs[subpass_desc_count] = {
         (VkSubpassDescription){
             .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -844,9 +946,16 @@ Renderer renderer_create(SDL_Window *window) {
             .colorAttachmentCount = trace_attachment_count,
             .pColorAttachments = trace_subpass_attachment_refs,
         },
+        (VkSubpassDescription){
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .inputAttachmentCount = accumulate_input_attachment_count,
+            .pInputAttachments = accumulate_input_attachment_refs,
+            .colorAttachmentCount = accumulate_attachment_count,
+            .pColorAttachments = accumulate_subpass_attachment_refs,
+        },
     };
 
-    const u32 render_pass_dependency_count = 3;
+    const u32 render_pass_dependency_count = 4;
     VkSubpassDependency render_pass_dependencies[render_pass_dependency_count] =
         {
             {
@@ -870,6 +979,15 @@ Renderer renderer_create(SDL_Window *window) {
             },
             {
                 .srcSubpass = 1,
+                .dstSubpass = 2,
+                .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+            },
+            {
+                .srcSubpass = 2,
                 .dstSubpass = VK_SUBPASS_EXTERNAL,
                 .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                 .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -880,11 +998,10 @@ Renderer renderer_create(SDL_Window *window) {
             },
         };
 
-    const u32 attachment_desc_count = 4;
+    const u32 attachment_desc_count = 5;
     VkAttachmentDescription attachment_descs[attachment_desc_count] = {
-        color_attachment_desc,
-        position_attachment_desc,
-        normal_attachment_desc,
+        color_attachment_desc,  position_attachment_desc,
+        normal_attachment_desc, accumulation_attachment_desc,
         depth_attachment_desc,
     };
     VkRenderPassCreateInfo render_pass_create_info = (VkRenderPassCreateInfo){
@@ -996,15 +1113,15 @@ Renderer renderer_create(SDL_Window *window) {
   { // create descriptor pool
     const u32 pool_sizes_len = 3;
     VkDescriptorPoolSize pool_sizes[pool_sizes_len] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-        {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 2},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
+        {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 4},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
     };
 
     VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = MAX_FRAMES_IN_FLIGHT,
+        .maxSets = 3,
         .poolSizeCount = pool_sizes_len,
         .pPoolSizes = pool_sizes,
     };
@@ -1380,8 +1497,188 @@ Renderer renderer_create(SDL_Window *window) {
     vkDestroyShaderModule(renderer.device, trace_vert_shader, NULL);
   }
 
+  { // accumulate pipeline
+    const u32 binding_count = 2;
+    VkDescriptorSetLayoutBinding bindings[binding_count] = {
+        {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+    };
+    VkDescriptorSetLayoutCreateInfo
+        accumulate_descriptor_set_layout_create_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = binding_count,
+            .pBindings = bindings,
+        };
+
+    ASSURE_VK(vkCreateDescriptorSetLayout(
+        renderer.device, &accumulate_descriptor_set_layout_create_info, NULL,
+        &renderer.accumulate_descriptor_set_layout));
+
+    VkDescriptorSetAllocateInfo descriptor_set_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = renderer.descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &renderer.accumulate_descriptor_set_layout,
+    };
+    ASSURE_VK(vkAllocateDescriptorSets(renderer.device,
+                                       &descriptor_set_alloc_info,
+                                       &renderer.accumulate_descriptor_set));
+
+    VkShaderModule accumulate_vert_shader =
+        create_shader_module(renderer.device, fullscreen_quad_vert_spv_data,
+                             fullscreen_quad_vert_spv_size);
+    VkShaderModule accumulate_frag_shader = create_shader_module(
+        renderer.device, accumulate_frag_spv_data, accumulate_frag_spv_size);
+
+    VkPipelineShaderStageCreateInfo accumulate_shader_stage_create_infos[] = {
+        (VkPipelineShaderStageCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = accumulate_vert_shader,
+            .pName = "main",
+        },
+        (VkPipelineShaderStageCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = accumulate_frag_shader,
+            .pName = "main",
+        },
+    };
+
+    const u32 dynamic_state_count = 2;
+    const VkDynamicState dynamic_states[dynamic_state_count] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+
+    const VkPipelineLayoutCreateInfo
+        accumulate_shader_pipeline_layout_create_info =
+            (VkPipelineLayoutCreateInfo){
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .setLayoutCount = 1,
+                .pSetLayouts = &renderer.accumulate_descriptor_set_layout,
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges =
+                    &(VkPushConstantRange){
+                        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                        .offset = 0,
+                        .size = sizeof(AccumulatePushConstants),
+                    },
+            };
+
+    ASSURE_VK(vkCreatePipelineLayout(
+        renderer.device, &accumulate_shader_pipeline_layout_create_info, NULL,
+        &renderer.accumulate_pipeline_layout));
+
+    VkVertexInputBindingDescription accumulate_vertex_input_binding_desc =
+        (VkVertexInputBindingDescription){
+            .binding = 0,
+            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+            .stride = sizeof(Vertex),
+        };
+
+    VkGraphicsPipelineCreateInfo accumulate_pipeline_create_info =
+        (VkGraphicsPipelineCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .stageCount = 2,
+            .pStages = accumulate_shader_stage_create_infos,
+            .layout = renderer.accumulate_pipeline_layout,
+            .renderPass = renderer.trace_render_pass,
+            .subpass = 2,
+            .pVertexInputState =
+                &(VkPipelineVertexInputStateCreateInfo){
+                    .sType =
+                        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                    .vertexAttributeDescriptionCount = 0,
+                    .pVertexAttributeDescriptions = NULL,
+                },
+            .pInputAssemblyState =
+                &(VkPipelineInputAssemblyStateCreateInfo){
+                    .sType =
+                        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                    .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                    .primitiveRestartEnable = VK_FALSE,
+                },
+            .pViewportState =
+                &(VkPipelineViewportStateCreateInfo){
+                    .sType =
+                        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                    .viewportCount = 1,
+                    .scissorCount = 1,
+                },
+            .pRasterizationState =
+                &(VkPipelineRasterizationStateCreateInfo){
+                    .sType =
+                        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                    .polygonMode = VK_POLYGON_MODE_FILL,
+                    .cullMode = VK_CULL_MODE_FRONT_BIT,
+                    .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+                    .lineWidth = 1.0,
+                },
+            .pMultisampleState =
+                &(VkPipelineMultisampleStateCreateInfo){
+                    .sType =
+                        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                    .sampleShadingEnable = VK_FALSE,
+                    .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+                },
+            .pDepthStencilState =
+                &(VkPipelineDepthStencilStateCreateInfo){
+                    .sType =
+                        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                    .depthTestEnable = VK_TRUE,
+                    .depthWriteEnable = VK_TRUE,
+                    .depthCompareOp = VK_COMPARE_OP_LESS,
+                    .depthBoundsTestEnable = VK_FALSE,
+                    .minDepthBounds = 0.0f,
+                    .maxDepthBounds = 1.0f,
+                    .stencilTestEnable = VK_TRUE,
+                },
+            .pColorBlendState =
+                &(VkPipelineColorBlendStateCreateInfo){
+                    .sType =
+                        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                    .logicOpEnable = VK_FALSE,
+                    // .logicOp = VK_LOGIC_OP_COPY,
+                    .attachmentCount = 1,
+                    .pAttachments =
+                        &(VkPipelineColorBlendAttachmentState){
+                            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                                              VK_COLOR_COMPONENT_G_BIT |
+                                              VK_COLOR_COMPONENT_B_BIT |
+                                              VK_COLOR_COMPONENT_A_BIT,
+                            .blendEnable = VK_FALSE,
+                        },
+                },
+            .pDynamicState =
+                &(VkPipelineDynamicStateCreateInfo){
+                    .sType =
+                        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                    .dynamicStateCount = dynamic_state_count,
+                    .pDynamicStates = dynamic_states,
+                },
+        };
+
+    vkCreateGraphicsPipelines(renderer.device, VK_NULL_HANDLE, 1,
+                              &accumulate_pipeline_create_info, NULL,
+                              &renderer.accumulate_pipeline);
+
+    vkDestroyShaderModule(renderer.device, accumulate_frag_shader, NULL);
+    vkDestroyShaderModule(renderer.device, accumulate_vert_shader, NULL);
+  }
+
   { // present pipeline
-    const u32 binding_count = 3;
+    const u32 binding_count = 4;
     VkDescriptorSetLayoutBinding bindings[binding_count] = {
         {
             .binding = 0,
@@ -1397,6 +1694,12 @@ Renderer renderer_create(SDL_Window *window) {
         },
         {
             .binding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 3,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1619,6 +1922,7 @@ void recreate_swapchain(Renderer *self) {
   destroy_framebuffer_attachment(self, &self->position_attachment);
   destroy_framebuffer_attachment(self, &self->normal_attachment);
   destroy_framebuffer_attachment(self, &self->trace_output_attachment);
+  destroy_framebuffer_attachment(self, &self->trace_accumulation_attachment);
 
   for (u32 i = 0; i < self->swapchain_image_count; i++) {
     vkDestroyFramebuffer(self->device, self->swapchain_framebuffers[i], NULL);
@@ -1705,7 +2009,44 @@ void recreate_swapchain(Renderer *self) {
   vkUpdateDescriptorSets(self->device, trace_input_descriptor_set_writes_count,
                          trace_input_descriptor_set_writes, 0, NULL);
 
-  const u32 present_sampler_descriptor_set_writes_count = 3;
+  const u32 accumulate_sampler_descriptor_set_writes_count = 2;
+  VkWriteDescriptorSet accumulate_sampler_descriptor_set_writes
+      [accumulate_sampler_descriptor_set_writes_count] = {
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->accumulate_descriptor_set,
+              .dstBinding = 0,
+              .dstArrayElement = 0,
+              .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+              .descriptorCount = 1,
+              .pImageInfo =
+                  &(VkDescriptorImageInfo){
+                      .imageView = self->trace_output_attachment.view,
+                      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      .sampler = self->vec3_sampler,
+                  },
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->accumulate_descriptor_set,
+              .dstBinding = 1,
+              .dstArrayElement = 0,
+              .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+              .descriptorCount = 1,
+              .pImageInfo =
+                  &(VkDescriptorImageInfo){
+                      .imageView = self->trace_accumulation_attachment.view,
+                      .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                      .sampler = self->vec3_sampler,
+                  },
+          },
+      };
+
+  vkUpdateDescriptorSets(self->device,
+                         accumulate_sampler_descriptor_set_writes_count,
+                         accumulate_sampler_descriptor_set_writes, 0, NULL);
+
+  const u32 present_sampler_descriptor_set_writes_count = 4;
   VkWriteDescriptorSet present_sampler_descriptor_set_writes
       [present_sampler_descriptor_set_writes_count] = {
           {
@@ -1747,6 +2088,20 @@ void recreate_swapchain(Renderer *self) {
                   &(VkDescriptorImageInfo){
                       .imageView = self->trace_output_attachment.view,
                       .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      .sampler = self->vec3_sampler,
+                  },
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->present_descriptor_set,
+              .dstBinding = 3,
+              .dstArrayElement = 0,
+              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+              .descriptorCount = 1,
+              .pImageInfo =
+                  &(VkDescriptorImageInfo){
+                      .imageView = self->trace_accumulation_attachment.view,
+                      .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                       .sampler = self->vec3_sampler,
                   },
           },
@@ -1803,6 +2158,7 @@ void renderer_destroy(Renderer *self) {
   destroy_framebuffer_attachment(self, &self->normal_attachment);
   destroy_framebuffer_attachment(self, &self->position_attachment);
   destroy_framebuffer_attachment(self, &self->trace_output_attachment);
+  destroy_framebuffer_attachment(self, &self->trace_accumulation_attachment);
 
   for (u32 i = 0; i < self->swapchain_image_count; i++) {
     vkDestroyFramebuffer(self->device, self->swapchain_framebuffers[i], NULL);
@@ -1813,6 +2169,11 @@ void renderer_destroy(Renderer *self) {
   vkDestroyPipelineLayout(self->device, self->trace_pipeline_layout, NULL);
   vkDestroyDescriptorSetLayout(self->device, self->trace_descriptor_set_layout,
                                NULL);
+
+  vkDestroyPipeline(self->device, self->accumulate_pipeline, NULL);
+  vkDestroyPipelineLayout(self->device, self->accumulate_pipeline_layout, NULL);
+  vkDestroyDescriptorSetLayout(self->device,
+                               self->accumulate_descriptor_set_layout, NULL);
 
   vkDestroyPipeline(self->device, self->present_pipeline, NULL);
   vkDestroyPipelineLayout(self->device, self->present_pipeline_layout, NULL);
@@ -1945,9 +2306,10 @@ void renderer_draw_gui(Renderer *self) {
 }
 
 void renderer_update(Renderer *self) {
-  imgui_renderer_begin();
+  imgui_renderer_begin(self);
   PerFrameData *frame = &self->frame_data[self->frame % MAX_FRAMES_IN_FLIGHT];
-  self->frame = (self->frame + 1);
+  ++self->frame;
+  ++self->accumulated_frames;
 
   vkWaitForFences(self->device, 1, &frame->in_flight, VK_TRUE, UINT64_MAX);
 
@@ -1971,7 +2333,7 @@ void renderer_update(Renderer *self) {
   };
   ASSURE_VK(vkBeginCommandBuffer(cmdbuffer, &cmdbuffer_begin_info));
 
-  const u32 render_pass_clear_value_count = 4;
+  const u32 render_pass_clear_value_count = 5;
   VkClearValue render_pass_clear_values[render_pass_clear_value_count] = {
       (VkClearValue){
           .color = (VkClearColorValue){0.0f, 0.0f, 0.0f, 1.0f},
@@ -1982,6 +2344,7 @@ void renderer_update(Renderer *self) {
       (VkClearValue){
           .color = (VkClearColorValue){0.0f, 0.0f, 0.0f, 1.0f},
       },
+      (VkClearValue){}, // unused
       (VkClearValue){.depthStencil = (VkClearDepthStencilValue){1.0f, 0}},
   };
   VkRenderPassBeginInfo render_pass_begin_info = (VkRenderPassBeginInfo){
@@ -2066,6 +2429,24 @@ void renderer_update(Renderer *self) {
       sizeof(PathTracePushConstants), &path_trace_push_constants);
 
   vkCmdDraw(cmdbuffer, 3, 1, 0, 0);
+
+  vkCmdNextSubpass(cmdbuffer, VK_SUBPASS_CONTENTS_INLINE);
+  vkCmdBindDescriptorSets(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          self->accumulate_pipeline_layout, 0, 1,
+                          &self->accumulate_descriptor_set, 0, NULL);
+  AccumulatePushConstants accumulate_push_constants = {
+      .frame = self->accumulated_frames,
+  };
+
+  vkCmdPushConstants(
+      cmdbuffer, self->accumulate_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+      0, sizeof(AccumulatePushConstants), &accumulate_push_constants);
+
+  vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    self->accumulate_pipeline);
+
+  vkCmdDraw(cmdbuffer, 3, 1, 0, 0);
+
   vkCmdEndRenderPass(cmdbuffer);
 
   const u32 present_render_pass_clear_value_count = 1;
@@ -2099,9 +2480,10 @@ void renderer_update(Renderer *self) {
   vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     self->present_pipeline);
 
-  const u32 num_items = 3;
-  const char *items[num_items] = {"position", "normal", "color"};
-  static u32 current_item = 2;
+  const u32 num_items = 4;
+  const char *items[num_items] = {"position", "normal", "color",
+                                  "accumulation"};
+  static u32 current_item = 3;
   if (igBeginCombo("present mode", items[current_item], 0)) {
     for (u32 i = 0; i < num_items; i++) {
       bool selected = (current_item == i);

@@ -1273,7 +1273,7 @@ Renderer renderer_create(SDL_Window *window) {
                     .depthBoundsTestEnable = VK_FALSE,
                     .minDepthBounds = 0.0f,
                     .maxDepthBounds = 1.0f,
-                    .stencilTestEnable = VK_TRUE,
+                    .stencilTestEnable = VK_FALSE,
                 },
             .pColorBlendState =
                 &(VkPipelineColorBlendStateCreateInfo){
@@ -1452,18 +1452,7 @@ Renderer renderer_create(SDL_Window *window) {
                     .sampleShadingEnable = VK_FALSE,
                     .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
                 },
-            .pDepthStencilState =
-                &(VkPipelineDepthStencilStateCreateInfo){
-                    .sType =
-                        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-                    .depthTestEnable = VK_TRUE,
-                    .depthWriteEnable = VK_TRUE,
-                    .depthCompareOp = VK_COMPARE_OP_LESS,
-                    .depthBoundsTestEnable = VK_FALSE,
-                    .minDepthBounds = 0.0f,
-                    .maxDepthBounds = 1.0f,
-                    .stencilTestEnable = VK_TRUE,
-                },
+            .pDepthStencilState = NULL,
             .pColorBlendState =
                 &(VkPipelineColorBlendStateCreateInfo){
                     .sType =
@@ -1817,18 +1806,7 @@ Renderer renderer_create(SDL_Window *window) {
                     .sampleShadingEnable = VK_FALSE,
                     .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
                 },
-            .pDepthStencilState =
-                &(VkPipelineDepthStencilStateCreateInfo){
-                    .sType =
-                        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-                    .depthTestEnable = VK_TRUE,
-                    .depthWriteEnable = VK_TRUE,
-                    .depthCompareOp = VK_COMPARE_OP_LESS,
-                    .depthBoundsTestEnable = VK_FALSE,
-                    .minDepthBounds = 0.0f,
-                    .maxDepthBounds = 1.0f,
-                    .stencilTestEnable = VK_TRUE,
-                },
+            .pDepthStencilState = NULL,
             .pColorBlendState =
                 &(VkPipelineColorBlendStateCreateInfo){
                     .sType =

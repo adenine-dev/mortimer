@@ -244,7 +244,7 @@ void main() {
 
     const vec3 surface_color = vec3(0.4, 0.4, 0.8);
 
-    const uint MAX_BOUNCES = 2;
+    const uint MAX_BOUNCES = 3;
     vec3 surface_reflectance = surface_color;
     const float EPSILON = 1e-5;
 
@@ -264,7 +264,7 @@ void main() {
         ray.o = position + normal * EPSILON;
         ray.d = normalize(face_forward(
             square_to_cosine_hemisphere(vec2(sample_1d(), sample_1d())),
-            -ray.d));
+            normal));
       } else {
         contributed = surface_reflectance * escaped_ray_color(ray);
         break;

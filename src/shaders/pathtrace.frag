@@ -34,6 +34,8 @@ struct BvhNode {
 layout(set = 0, binding = 4) readonly buffer BvhBuffer { BvhNode nodes[]; }
 bvh;
 
+layout(binding = 5) uniform sampler2D environment_map;
+
 layout(push_constant) uniform PushConstants {
   mat4 view_matrix;
   mat4 projection_matrix;
@@ -128,7 +130,7 @@ struct SceneIntersection {
 };
 
 SceneIntersection ray_scene_intersect(Ray ray) {
-  const uint TO_VISIT_LEN = 32;
+  const uint TO_VISIT_LEN = 64;
   uint to_visit[TO_VISIT_LEN];
   uint node_idx = constants.node_count - 1;
   uint to_visit_idx = 0;
@@ -174,10 +176,15 @@ SceneIntersection ray_scene_intersect(Ray ray) {
   return SceneIntersection(t_max, triangle_idx);
 }
 
+const float PI = 3.14159265359;
+
 vec3 escaped_ray_color(Ray ray) {
+  vec2 uv =
+      vec2(0.5 + (atan(ray.d.z, ray.d.x) / (PI * 2)), 0.5 - asin(ray.d.y) / PI);
+  return texture(environment_map, uv).xyz;
   // return vec3(1.0, 0.4, 1.0);
-  return mix(vec3((ray.d.y + 1) * 0.5), vec3(1.0, 1.0, 1.0),
-             vec3(1.0, 0.4, 1.0));
+  // return mix(vec3((ray.d.y + 1) * 0.5), vec3(1.0, 1.0, 1.0),
+  //            vec3(1.0, 0.4, 1.0));
 }
 
 vec3 get_face_normal(uint i, vec3 p) {
@@ -199,8 +206,6 @@ vec3 get_face_normal(uint i, vec3 p) {
 }
 
 vec3 face_forward(vec3 n, vec3 v) { return 0.0 > dot(n, v) ? -n : n; }
-
-const float PI = 3.14159265359;
 
 vec2 square_to_uniform_disk_concentric(vec2 u) {
   u = 2.0 * u - vec2(1.0);
@@ -242,7 +247,7 @@ void main() {
   for (uint i = 0; i < SAMPLES; i++) {
     vec3 position = subpassLoad(sampler_position).xyz;
 
-    const vec3 surface_color = vec3(0.4, 0.4, 0.8);
+    const vec3 surface_color = vec3(0.8, 0.8, 0.8);
 
     const uint MAX_BOUNCES = 3;
     vec3 surface_reflectance = surface_color;

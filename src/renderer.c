@@ -1113,7 +1113,7 @@ Renderer renderer_create(SDL_Window *window) {
   { // create descriptor pool
     const u32 pool_sizes_len = 3;
     VkDescriptorPoolSize pool_sizes[pool_sizes_len] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5},
         {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 4},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
     };
@@ -1302,7 +1302,7 @@ Renderer renderer_create(SDL_Window *window) {
   }
 
   { // path trace pipeline
-    const u32 binding_count = 5;
+    const u32 binding_count = 6;
     VkDescriptorSetLayoutBinding bindings[binding_count] = {
         {
             .binding = 0,
@@ -1331,6 +1331,12 @@ Renderer renderer_create(SDL_Window *window) {
         {
             .binding = 4,
             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 5,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
@@ -1915,7 +1921,7 @@ void recreate_swapchain(Renderer *self) {
   create_swapchain(self);
   create_framebuffers(self);
 
-  const u32 trace_input_descriptor_set_writes_count = 5;
+  const u32 trace_input_descriptor_set_writes_count = 6;
   VkWriteDescriptorSet trace_input_descriptor_set_writes
       [trace_input_descriptor_set_writes_count] = {
           {
@@ -1981,6 +1987,20 @@ void recreate_swapchain(Renderer *self) {
                       .buffer = self->bvh_buffer,
                       .offset = 0,
                       .range = VK_WHOLE_SIZE,
+                  },
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->trace_descriptor_set,
+              .dstBinding = 5,
+              .dstArrayElement = 0,
+              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+              .descriptorCount = 1,
+              .pImageInfo =
+                  &(VkDescriptorImageInfo){
+                      .imageView = self->envlight_image_view,
+                      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      .sampler = self->vec3_sampler,
                   },
           },
       };
@@ -2105,6 +2125,12 @@ void renderer_destroy(Renderer *self) {
   vkDeviceWaitIdle(self->device);
 
   imgui_renderer_destroy(self, &self->imgui_impl);
+
+  if (self->envlight_image != VK_NULL_HANDLE) {
+    vkDestroyImageView(self->device, self->envlight_image_view, NULL);
+    vkDestroyImage(self->device, self->envlight_image, NULL);
+    vkFreeMemory(self->device, self->envlight_image_memory, NULL);
+  }
 
   if (self->vertex_buffer != VK_NULL_HANDLE) {
     vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
@@ -2271,6 +2297,147 @@ void renderer_set_object(Renderer *self, TriangleMesh *mesh) {
                     self->mesh->bvh_nodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
   self->bvh_buffer = res.buffer;
   self->bvh_buffer_memory = res.memory;
+}
+
+void renderer_set_envlight(Renderer *self, EnvironmentLight *envlight) {
+  self->envlight = envlight;
+
+  if (self->envlight_image != VK_NULL_HANDLE) {
+    vkDestroyImageView(self->device, self->envlight_image_view, NULL);
+    vkDestroyImage(self->device, self->envlight_image, NULL);
+    self->envlight_image = VK_NULL_HANDLE;
+    vkFreeMemory(self->device, self->envlight_image_memory, NULL);
+  }
+
+  VkExtent3D image_extent = (VkExtent3D){
+      .width = envlight->width,
+      .height = envlight->height,
+      .depth = 1,
+  };
+  VkImageCreateInfo image_create_info = (VkImageCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+      .extent = image_extent,
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+
+  ASSURE_VK(vkCreateImage(self->device, &image_create_info, NULL,
+                          &self->envlight_image));
+  VkMemoryRequirements image_mem_reqs;
+  vkGetImageMemoryRequirements(self->device, self->envlight_image,
+                               &image_mem_reqs);
+  VkMemoryAllocateInfo image_mem_allocate_info = (VkMemoryAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = image_mem_reqs.size,
+      .memoryTypeIndex = find_memory_type(self, image_mem_reqs.memoryTypeBits,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+  };
+  vkAllocateMemory(self->device, &image_mem_allocate_info, NULL,
+                   &self->envlight_image_memory);
+  vkBindImageMemory(self->device, self->envlight_image,
+                    self->envlight_image_memory, 0);
+
+  BufferResult staging_buffer =
+      create_buffer(self, sizeof(vec4) * envlight->width * envlight->height,
+                    envlight->light_data, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+
+  VkCommandBuffer cmdbuffer = begin_immediate_submit(self);
+  VkImageMemoryBarrier image_memory_barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = self->envlight_image,
+      .subresourceRange =
+          (VkImageSubresourceRange){
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0,
+              .levelCount = 1,
+              .baseArrayLayer = 0,
+              .layerCount = 1,
+          },
+      .srcAccessMask = 0,
+      .dstAccessMask = 0,
+  };
+  vkCmdPipelineBarrier(cmdbuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, NULL, 0, NULL,
+                       1, &image_memory_barrier);
+
+  VkBufferImageCopy region = {
+      .bufferOffset = 0,
+      .bufferRowLength = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource =
+          (VkImageSubresourceLayers){
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .mipLevel = 0,
+              .baseArrayLayer = 0,
+              .layerCount = 1,
+          },
+      .imageOffset = {0, 0, 0},
+      .imageExtent = image_extent,
+  };
+  vkCmdCopyBufferToImage(cmdbuffer, staging_buffer.buffer, self->envlight_image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+  image_memory_barrier = (VkImageMemoryBarrier){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = self->envlight_image,
+      .subresourceRange =
+          (VkImageSubresourceRange){
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0,
+              .levelCount = 1,
+              .baseArrayLayer = 0,
+              .layerCount = 1,
+          },
+      .srcAccessMask = 0,
+      .dstAccessMask = 0,
+  };
+  vkCmdPipelineBarrier(cmdbuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, NULL, 0, NULL,
+                       1, &image_memory_barrier);
+
+  end_immediate_submit(self, cmdbuffer);
+
+  vkDestroyBuffer(self->device, staging_buffer.buffer, NULL);
+  vkFreeMemory(self->device, staging_buffer.memory, NULL);
+
+  VkImageViewCreateInfo image_view_create_info = (VkImageViewCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = self->envlight_image,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+      .components =
+          (VkComponentMapping){
+              .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+              .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+              .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+              .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+          },
+      .subresourceRange =
+          (VkImageSubresourceRange){
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0,
+              .levelCount = 1,
+              .baseArrayLayer = 0,
+              .layerCount = 1,
+          },
+  };
+  ASSURE_VK(vkCreateImageView(self->device, &image_view_create_info, NULL,
+                              &self->envlight_image_view));
 }
 
 void renderer_draw_gui(Renderer *self) {

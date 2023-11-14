@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <vulkan/vulkan_core.h>
 
+#include "envlight.h"
 #include "imgui_renderer.h"
 #include "log.h"
 #include "trimesh.h"
@@ -106,6 +107,11 @@ typedef struct Renderer_t {
   VkBuffer bvh_buffer;
   VkDeviceMemory bvh_buffer_memory;
 
+  EnvironmentLight *envlight;
+  VkImage envlight_image;
+  VkDeviceMemory envlight_image_memory;
+  VkImageView envlight_image_view;
+
   ImguiRendererImpl imgui_impl;
 } Renderer;
 
@@ -115,6 +121,7 @@ void renderer_update(Renderer *self);
 void renderer_resize(Renderer *self, u32 width, u32 height);
 
 void renderer_set_object(Renderer *self, TriangleMesh *mesh);
+void renderer_set_envlight(Renderer *self, EnvironmentLight *envlight);
 
 #define ASSURE_VK(expr)                                                        \
   {                                                                            \

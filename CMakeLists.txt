@@ -41,6 +41,7 @@ target_compile_options(mortimer PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno
 target_compile_definitions(mortimer PUBLIC -DCIMGUI_USE_VULKAN -DCIMGUI_USE_SDL3)
 target_include_directories(mortimer PUBLIC vendor/cimgui vendor/cimgui/imgui)
 target_include_directories(mortimer PRIVATE vendor/ccVector)
+target_include_directories(mortimer PRIVATE vendor/stb)
 target_include_directories(mortimer PRIVATE vendor/tinyobjloader)
 target_include_directories(mortimer PRIVATE ${Vulkan_INCLUDE_DIR})
 target_link_libraries(mortimer Vulkan::Vulkan cimgui_sdl3_vulkan)

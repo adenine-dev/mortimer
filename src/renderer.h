@@ -94,6 +94,8 @@ typedef struct Renderer_t {
   mat4x4 camera_view;
   mat4x4 camera_projection;
   f32 camera_fov;
+  f32 camera_lens_radius;
+  f32 camera_focal_dist;
   u32 accumulated_frames;
 
   TriangleMesh *mesh;

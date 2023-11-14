@@ -43,21 +43,62 @@ layout(push_constant) uniform PushConstants {
   uint index_count;
   uint node_count;
   uint frame;
+  float env_focal_dist;
+  float env_lens_radius;
 }
 constants;
+
+const float PI = 3.14159265359;
 
 struct Ray {
   vec3 o;
   vec3 d;
 };
 
-Ray create_ray(vec2 uv) {
-  vec3 eye = -constants.view_matrix[3].xyz * mat3(constants.view_matrix);
+vec2 square_to_uniform_disk_concentric(vec2 u) {
+  u = 2.0 * u - vec2(1.0);
+  if (u.x == 0.0 && u.y == 0.0) {
+    return vec2(0.0);
+  }
+
+  float r;
+  float theta;
+  if (abs(u.x) > abs(u.y)) {
+    r = u.x;
+    theta = PI / 4.0 * (u.y / u.x);
+  } else {
+    r = u.y;
+    theta = PI / 2.0 - PI / 4.0 * (u.x / u.y);
+  };
+
+  return r * vec2(cos(theta), sin(theta));
+}
+
+Ray create_ray(vec2 uv, vec2 sample2) {
   vec4 ndsh = vec4(uv * 2.0 - 1.0, -1.0, 1.0);
   vec4 view = vec4((inverse(constants.projection_matrix) * ndsh).xyz, 0.0);
-  vec3 view_dir = normalize((inverse(constants.view_matrix) * view).xyz);
+  vec3 dir = normalize((inverse(constants.view_matrix) * view).xyz);
 
-  return Ray(eye, view_dir);
+  Ray ray = Ray(vec3(0.0), dir);
+
+  if (constants.env_lens_radius > 0.0) {
+    float sign = sign(dir.z);
+    float a = 1.0 / -(sign + dir.z);
+    float b = dir.x * dir.y * a;
+
+    vec3 s = normalize(
+        vec3(1.0 + sign * dir.x * dir.x * a, sign * b, -sign * dir.x));
+    vec3 t = normalize(vec3(b, sign + dir.y * dir.y * a, -dir.y));
+
+    vec3 focus = ray.o + ray.d * (constants.env_focal_dist / length(ray.d));
+    vec2 d = square_to_uniform_disk_concentric(sample2);
+    ray.o = (s * d.x + t * d.y) * constants.env_lens_radius;
+    ray.d = -normalize(ray.o - focus);
+  }
+
+  ray.o += -constants.view_matrix[3].xyz * mat3(constants.view_matrix);
+
+  return ray;
 }
 
 float ray_triangle_intersection(Ray ray, vec3 v0, vec3 v1, vec3 v2) {
@@ -124,6 +165,8 @@ float sample_1d() {
   return float(rng_seed.x) / float(0xffffffffu);
 }
 
+vec2 sample_2d() { return vec2(sample_1d(), sample_1d()); }
+
 struct SceneIntersection {
   float t;
   uint triangle_idx;
@@ -176,8 +219,6 @@ SceneIntersection ray_scene_intersect(Ray ray) {
   return SceneIntersection(t_max, triangle_idx);
 }
 
-const float PI = 3.14159265359;
-
 vec3 escaped_ray_color(Ray ray) {
   vec2 uv =
       vec2(0.5 + (atan(ray.d.z, ray.d.x) / (PI * 2)), 0.5 - asin(ray.d.y) / PI);
@@ -207,25 +248,6 @@ vec3 get_face_normal(uint i, vec3 p) {
 
 vec3 face_forward(vec3 n, vec3 v) { return 0.0 > dot(n, v) ? -n : n; }
 
-vec2 square_to_uniform_disk_concentric(vec2 u) {
-  u = 2.0 * u - vec2(1.0);
-  if (u.x == 0.0 && u.y == 0.0) {
-    return vec2(0.0);
-  }
-
-  float r;
-  float theta;
-  if (abs(u.x) > abs(u.y)) {
-    r = u.x;
-    theta = PI / 4.0 * (u.y / u.x);
-  } else {
-    r = u.y;
-    theta = PI / 2.0 - PI / 4.0 * (u.x / u.y);
-  };
-
-  return r * vec2(cos(theta), sin(theta));
-}
-
 vec3 square_to_cosine_hemisphere(vec2 u) {
   vec2 d = square_to_uniform_disk_concentric(u);
   float z = sqrt(max(0.0, 1.0 - d.x * d.x - d.y * d.y));
@@ -238,7 +260,8 @@ void main() {
 
   vec3 normal = subpassLoad(sampler_normal).xyz;
   if (normal == vec3(0.0)) {
-    col = vec4(escaped_ray_color(create_ray(uv)), 1.0);
+    col = vec4(escaped_ray_color(create_ray(uv, sample_2d())), 1.0);
+    // col = vec4(create_ray(uv, sample_2d()).d, 1.0);
     return;
   }
 
@@ -247,17 +270,15 @@ void main() {
   for (uint i = 0; i < SAMPLES; i++) {
     vec3 position = subpassLoad(sampler_position).xyz;
 
-    const vec3 surface_color = vec3(0.8, 0.8, 0.8);
+    const vec3 surface_color = vec3(0.4, 0.4, 0.4);
 
     const uint MAX_BOUNCES = 3;
     vec3 surface_reflectance = surface_color;
     const float EPSILON = 1e-5;
 
-    Ray ray =
-        Ray(position + normal * EPSILON,
-            normalize(face_forward(
-                square_to_cosine_hemisphere(vec2(sample_1d(), sample_1d())),
-                normal)));
+    Ray ray = Ray(position + normal * EPSILON,
+                  normalize(face_forward(
+                      square_to_cosine_hemisphere(sample_2d()), normal)));
     vec3 contributed = vec3(0.0);
     uint j;
     for (j = 0; j < MAX_BOUNCES; j++) {
@@ -267,9 +288,8 @@ void main() {
         position = (ray.o + ray.d * intersection.t);
         normal = get_face_normal(intersection.triangle_idx, position);
         ray.o = position + normal * EPSILON;
-        ray.d = normalize(face_forward(
-            square_to_cosine_hemisphere(vec2(sample_1d(), sample_1d())),
-            normal));
+        ray.d = normalize(
+            face_forward(square_to_cosine_hemisphere(sample_2d()), normal));
       } else {
         contributed = surface_reflectance * escaped_ray_color(ray);
         break;

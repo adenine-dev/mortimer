@@ -627,6 +627,8 @@ typedef struct {
   u32 index_count;
   u32 node_count;
   u32 frame;
+  f32 env_focal_dist;
+  f32 env_lens_radius;
 } PathTracePushConstants;
 
 typedef struct {
@@ -1879,7 +1881,8 @@ Renderer renderer_create(SDL_Window *window) {
   { // init camera
     mat4x4LookAt(renderer.camera_view, vec3New(0.0f, 0.0f, 1.0f),
                  vec3New(0.0f, 0.0f, 0.0f), vec3New(0.0f, 1.0f, 0.0f));
-
+    renderer.camera_focal_dist = 20.0;
+    renderer.camera_lens_radius = 0.5;
     renderer.camera_fov = 80.0;
     renderer_set_or_update_camera(&renderer);
   }
@@ -2444,7 +2447,15 @@ void renderer_draw_gui(Renderer *self) {
   if (igCollapsingHeader_BoolPtr("Camera", NULL,
                                  ImGuiTreeNodeFlags_DefaultOpen |
                                      ImGuiTreeNodeFlags_CollapsingHeader)) {
-    if (igSliderFloat("FOV", &self->camera_fov, 0.01, 180.0, "%.1fdeg", 0)) {
+    bool camera_changed = false;
+    camera_changed |= igSliderFloat("focal dist", &self->camera_focal_dist,
+                                    0.001, 100.0, "%f", 0);
+    camera_changed |=
+        igSliderFloat("radius", &self->camera_lens_radius, 0.0, 1.0, "%f", 0);
+    camera_changed |=
+        igSliderFloat("FOV", &self->camera_fov, 0.01, 180.0, "%.1fdeg", 0);
+
+    if (camera_changed) {
       renderer_set_or_update_camera(self);
     }
   }
@@ -2558,11 +2569,14 @@ void renderer_update(Renderer *self) {
 
   vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     self->trace_pipeline);
+
   PathTracePushConstants path_trace_push_constants = {
       .index_count = self->mesh->index_count,
       .vertex_count = self->mesh->vertex_count,
       .node_count = self->mesh->bvh_node_count,
       .frame = self->frame,
+      .env_focal_dist = self->camera_focal_dist,
+      .env_lens_radius = self->camera_lens_radius,
   };
   memcpy(path_trace_push_constants.view_matrix, self->camera_view,
          sizeof(mat4x4));

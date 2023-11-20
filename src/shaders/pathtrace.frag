@@ -1,27 +1,34 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
-layout(input_attachment_index = 0,
-       binding = 0) uniform subpassInput sampler_position;
-layout(input_attachment_index = 1,
-       binding = 1) uniform subpassInput sampler_normal;
+#include "./common/constants.glsl"
+#include "./common/random.glsl"
+
+// #define CFG_STYLIZE_HEART
 
 layout(location = 0) in vec2 i_uv;
 
 layout(location = 0) out vec4 col;
 
+layout(input_attachment_index = 0,
+       binding = 0) uniform subpassInput sampler_position;
+layout(input_attachment_index = 1,
+       binding = 1) uniform subpassInput sampler_normal;
+layout(input_attachment_index = 2,
+       binding = 2) uniform usubpassInput sampler_object_id;
+
 struct Vertex {
-  vec3 position;
-  uint _pad0;
+  vec4 position_object_id;
   vec3 normal;
   uint _pad1;
 };
 
-layout(std140, set = 0, binding = 2) readonly buffer VertexBuffer {
+layout(std140, set = 0, binding = 3) readonly buffer VertexBuffer {
   Vertex vertices[];
 }
 vertex_buffer;
 
-layout(set = 0, binding = 3) readonly buffer IndexBuffer { uint indices[]; }
+layout(set = 0, binding = 4) readonly buffer IndexBuffer { uint indices[]; }
 index_buffer;
 
 // `l` and `r` are the `w` component of `min_l` and `max_r` respectively, for
@@ -31,10 +38,19 @@ struct BvhNode {
   vec4 max_r;
 };
 
-layout(set = 0, binding = 4) readonly buffer BvhBuffer { BvhNode nodes[]; }
+layout(set = 0, binding = 5) readonly buffer BvhBuffer { BvhNode nodes[]; }
 bvh;
 
-layout(binding = 5) uniform sampler2D environment_map;
+layout(set = 0, binding = 6) uniform sampler2D environment_map;
+
+struct Material {
+  vec3 albedo;
+  uint _pad0;
+};
+layout(set = 0, binding = 7) readonly buffer MaterialsBuffer {
+  Material materials[];
+}
+material_buffer;
 
 layout(push_constant) uniform PushConstants {
   mat4 view_matrix;
@@ -42,13 +58,12 @@ layout(push_constant) uniform PushConstants {
   uint vertex_count;
   uint index_count;
   uint node_count;
+  uint object_count;
   uint frame;
   float env_focal_dist;
   float env_lens_radius;
 }
 constants;
-
-const float PI = 3.14159265359;
 
 struct Ray {
   vec3 o;
@@ -74,14 +89,47 @@ vec2 square_to_uniform_disk_concentric(vec2 u) {
   return r * vec2(cos(theta), sin(theta));
 }
 
+vec2 square_to_disk(vec2 u) {
+  float r = sqrt(u.x);
+  float theta = 2.0 * PI * u.y;
+
+  return r * vec2(sin(theta), cos(theta));
+}
+
+vec2 square_to_heartish(vec2 u) {
+  // return u;
+  vec2 ret = square_to_disk(u);
+  ret.x = (ret.x + sqrt(abs(sin(ret.y)))) * 0.5;
+  return ret;
+}
+
 Ray create_ray(vec2 uv, vec2 sample2) {
-  vec4 ndsh = vec4(uv * 2.0 - 1.0, -1.0, 1.0);
+  uv = (uv * 2.0 - 1.0);
+  vec4 ndsh = vec4(uv, -1.0, 1.0);
   vec4 view = vec4((inverse(constants.projection_matrix) * ndsh).xyz, 0.0);
   vec3 dir = normalize((inverse(constants.view_matrix) * view).xyz);
 
   Ray ray = Ray(vec3(0.0), dir);
 
   if (constants.env_lens_radius > 0.0) {
+#ifdef CFG_STYLIZE_HEART
+    // needs a more complicated, slower method to construct the onb to prevent
+    // weird discontinuities
+    float theta = PI / 2.0;
+    mat4 rotator_z = mat4(cos(theta), -sin(theta), 0, 0,  // format newline
+                          sin(theta), cos(theta), 0, 0,   //
+                          0, 0, 1, 0,                     //
+                          0, 0, 0, 1);
+
+    vec4 ndsh_perp =
+        vec4(1.0, uv.y, -uv.x, 1.0);  // ndsh * 90deg around the y axis
+    vec4 view_perp =
+        vec4((inverse(constants.projection_matrix) * ndsh_perp).xyz, 0.0);
+    vec3 s =
+        normalize((inverse(rotator_z * constants.view_matrix) * view_perp).xyz);
+
+    vec3 t = cross(s, dir);
+#else
     float sign = sign(dir.z);
     float a = 1.0 / -(sign + dir.z);
     float b = dir.x * dir.y * a;
@@ -89,10 +137,17 @@ Ray create_ray(vec2 uv, vec2 sample2) {
     vec3 s = normalize(
         vec3(1.0 + sign * dir.x * dir.x * a, sign * b, -sign * dir.x));
     vec3 t = normalize(vec3(b, sign + dir.y * dir.y * a, -dir.y));
+#endif
 
     vec3 focus = ray.o + ray.d * (constants.env_focal_dist / length(ray.d));
-    vec2 d = square_to_uniform_disk_concentric(sample2);
-    ray.o = (s * d.x + t * d.y) * constants.env_lens_radius;
+
+#ifdef CFG_STYLIZE_HEART
+    vec2 offset = square_to_heartish(sample2);
+#else
+    vec2 offset = square_to_uniform_disk_concentric(sample2);
+#endif
+
+    ray.o = (s * offset.x + t * offset.y) * constants.env_lens_radius;
     ray.d = -normalize(ray.o - focus);
   }
 
@@ -144,31 +199,11 @@ bool ray_aabb_intersection(Ray ray, vec3 aabb_min, vec3 aabb_max) {
   return near < far;
 }
 
-uvec4 rng_seed;
-ivec2 rng_p;
-void init_random(vec2 p, uint frame) {
-  rng_p = ivec2(p);
-  rng_seed = uvec4(p, uint(frame), uint(p.x) + uint(p.y));
-}
-
-float sample_1d() {
-  rng_seed = rng_seed * 1664525u + 1013904223u;
-  rng_seed.x += rng_seed.y * rng_seed.w;
-  rng_seed.y += rng_seed.z * rng_seed.x;
-  rng_seed.z += rng_seed.x * rng_seed.y;
-  rng_seed.w += rng_seed.y * rng_seed.z;
-  rng_seed = rng_seed ^ (rng_seed >> 16u);
-  rng_seed.x += rng_seed.y * rng_seed.w;
-  rng_seed.y += rng_seed.z * rng_seed.x;
-  rng_seed.z += rng_seed.x * rng_seed.y;
-  rng_seed.w += rng_seed.y * rng_seed.z;
-  return float(rng_seed.x) / float(0xffffffffu);
-}
-
 vec2 sample_2d() { return vec2(sample_1d(), sample_1d()); }
 
 struct SceneIntersection {
   float t;
+  uint object_id;
   uint triangle_idx;
 };
 
@@ -179,7 +214,8 @@ SceneIntersection ray_scene_intersect(Ray ray) {
   uint to_visit_idx = 0;
 
   float t_max = 100000000.0;
-  uint triangle_idx = 0xffffffff;
+  uint triangle_idx;
+  uint object_id = NULL_OBJECT_ID;
 
   uint intersection_count = 0;
   while (true) {
@@ -190,15 +226,18 @@ SceneIntersection ray_scene_intersect(Ray ray) {
       if (floatBitsToUint(node.min_l.w) ==
           floatBitsToUint(node.max_r.w)) {  // leaf node
         uint i = floatBitsToUint(node.min_l.w);
-        vec3 v0 =
-            vertex_buffer.vertices[index_buffer.indices[i * 3 + 0]].position;
-        vec3 v1 =
-            vertex_buffer.vertices[index_buffer.indices[i * 3 + 1]].position;
-        vec3 v2 =
-            vertex_buffer.vertices[index_buffer.indices[i * 3 + 2]].position;
+        vec3 v0 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 0]]
+                      .position_object_id.xyz;
+        vec3 v1 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 1]]
+                      .position_object_id.xyz;
+        vec3 v2 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 2]]
+                      .position_object_id.xyz;
         float t = ray_triangle_intersection(ray, v0, v1, v2);
         if (0.0 < t && t < t_max) {
           triangle_idx = i;
+          object_id = floatBitsToUint(
+              vertex_buffer.vertices[index_buffer.indices[i * 3 + 0]]
+                  .position_object_id.w);
           t_max = t;
         }
       } else {
@@ -212,17 +251,18 @@ SceneIntersection ray_scene_intersect(Ray ray) {
     node_idx = to_visit[to_visit_idx--];
   }
 
-  if (triangle_idx == 0xffffffff) {
-    return SceneIntersection(-1.0, triangle_idx);
+  if (object_id == NULL_OBJECT_ID) {
+    return SceneIntersection(-1.0, NULL_OBJECT_ID, triangle_idx);
   }
 
-  return SceneIntersection(t_max, triangle_idx);
+  return SceneIntersection(t_max, object_id, triangle_idx);
 }
 
 vec3 escaped_ray_color(Ray ray) {
   vec2 uv =
       vec2(0.5 + (atan(ray.d.z, ray.d.x) / (PI * 2)), 0.5 - asin(ray.d.y) / PI);
   return texture(environment_map, uv).xyz;
+
   // return vec3(1.0, 0.4, 1.0);
   // return mix(vec3((ray.d.y + 1) * 0.5), vec3(1.0, 1.0, 1.0),
   //            vec3(1.0, 0.4, 1.0));
@@ -233,12 +273,15 @@ vec3 get_face_normal(uint i, vec3 p) {
   Vertex v1 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 1]];
   Vertex v2 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 2]];
 
-  vec3 f0 = v0.position - p;
-  vec3 f1 = v1.position - p;
-  vec3 f2 = v2.position - p;
+  vec3 p0 = v0.position_object_id.xyz;
+  vec3 p1 = v1.position_object_id.xyz;
+  vec3 p2 = v2.position_object_id.xyz;
 
-  float det =
-      length(cross(v0.position - v1.position, v0.position - v2.position));
+  vec3 f0 = p0 - p;
+  vec3 f1 = p1 - p;
+  vec3 f2 = p2 - p;
+
+  float det = length(cross(p0 - p1, p0 - p2));
   float b0 = length(cross(f1, f2)) / det;
   float b1 = length(cross(f2, f0)) / det;
   float b2 = length(cross(f0, f1)) / det;
@@ -259,9 +302,15 @@ void main() {
   init_random(gl_FragCoord.xy, constants.frame);
 
   vec3 normal = subpassLoad(sampler_normal).xyz;
-  if (normal == vec3(0.0)) {
-    col = vec4(escaped_ray_color(create_ray(uv, sample_2d())), 1.0);
+  uint object_id = subpassLoad(sampler_object_id).x;
+  if (object_id == NULL_OBJECT_ID) {
+    col = vec4(0.0);
+    const uint N = 100;
+    for (uint i = 0; i < N; i++) {
+      col += vec4(escaped_ray_color(create_ray(uv, sample_2d())), 1.0);
+    }
     // col = vec4(create_ray(uv, sample_2d()).d, 1.0);
+    col /= N;
     return;
   }
 
@@ -270,7 +319,7 @@ void main() {
   for (uint i = 0; i < SAMPLES; i++) {
     vec3 position = subpassLoad(sampler_position).xyz;
 
-    const vec3 surface_color = vec3(0.4, 0.4, 0.4);
+    vec3 surface_color = material_buffer.materials[object_id].albedo;
 
     const uint MAX_BOUNCES = 3;
     vec3 surface_reflectance = surface_color;
@@ -283,7 +332,9 @@ void main() {
     uint j;
     for (j = 0; j < MAX_BOUNCES; j++) {
       SceneIntersection intersection = ray_scene_intersect(ray);
-      if (intersection.triangle_idx != 0xffffffff) {
+      if (intersection.object_id != NULL_OBJECT_ID) {
+        object_id = intersection.object_id;
+        surface_color = material_buffer.materials[object_id].albedo;
         surface_reflectance *= surface_color;
         position = (ray.o + ray.d * intersection.t);
         normal = get_face_normal(intersection.triangle_idx, position);

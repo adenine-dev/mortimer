@@ -3,9 +3,10 @@
 #include "maths.h"
 #include "types.h"
 
+/// `position` and `object_index` are translated as a vec4 on the gpu
 typedef struct {
   vec3 position;
-  u32 _pad0;
+  u32 object_index;
   vec3 normal;
   u32 _pad1;
 } Vertex;

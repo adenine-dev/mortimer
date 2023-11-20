@@ -6,6 +6,7 @@
 
 #include "SDL_video.h"
 #include "ccVector.h"
+#include "scene.h"
 #include "trimesh.h"
 #include <vulkan/vulkan_core.h>
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
@@ -23,6 +24,8 @@
 #include "shaders/embed/fullscreen_quad_vert_spv.h"
 #include "shaders/embed/pathtrace_frag_spv.h"
 #include "shaders/embed/present_frag_spv.h"
+
+const u32 NULL_OBJECT_ID = 0xffffffff;
 
 bool assure_validation_layer_support(usize n, const char **requested_layers) {
   u32 available_layer_count;
@@ -509,6 +512,10 @@ void create_swapchain(Renderer *self) {
       self, VK_FORMAT_R32G32B32A32_SFLOAT,
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
           VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
+  self->object_index_attachment = create_framebuffer_attachment(
+      self, VK_FORMAT_R32_UINT,
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+          VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
 
   self->trace_output_attachment = create_framebuffer_attachment(
       self, VK_FORMAT_R32G32B32A32_SFLOAT,
@@ -560,11 +567,12 @@ void create_framebuffers(Renderer *self) {
   for (u32 i = 0; i < self->swapchain_image_count; i++) {
     // trace framebuffer
     {
-      const u32 attachment_count = 5;
+      const u32 attachment_count = 6;
       VkImageView attachments[attachment_count] = {
           self->trace_output_attachment.view,
           self->position_attachment.view,
           self->normal_attachment.view,
+          self->object_index_attachment.view,
           self->trace_accumulation_attachment.view,
           self->depth_attachment.view,
       };
@@ -626,6 +634,7 @@ typedef struct {
   u32 vertex_count;
   u32 index_count;
   u32 node_count;
+  u32 object_count;
   u32 frame;
   f32 env_focal_dist;
   f32 env_lens_radius;
@@ -637,8 +646,6 @@ typedef struct {
 
 typedef struct {
   u32 frame;
-  u32 _pad0;
-  bool dirty;
 } AccumulatePushConstants;
 
 const u32 VALIDATION_LAYER_COUNT = 1;
@@ -876,6 +883,17 @@ Renderer renderer_create(SDL_Window *window) {
         .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
 
+    VkAttachmentDescription object_index_attachment_desc = {
+        .format = renderer.object_index_attachment.format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
     VkAttachmentDescription accumulation_attachment_desc = {
         .format = renderer.trace_accumulation_attachment.format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -899,15 +917,16 @@ Renderer renderer_create(SDL_Window *window) {
     };
 
     VkAttachmentReference depth_attachment_ref = {
-        .attachment = 4,
+        .attachment = 5,
         .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
-    const u32 first_bounce_attachment_count = 2;
+    const u32 first_bounce_attachment_count = 3;
     VkAttachmentReference
         first_bounce_subpass_attachment_refs[first_bounce_attachment_count] = {
             {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, // position
             {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, // normal
+            {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, // object index
         };
 
     const u32 trace_attachment_count = 1;
@@ -919,19 +938,20 @@ Renderer renderer_create(SDL_Window *window) {
         trace_subpass_input_attachment_refs[first_bounce_attachment_count] = {
             {1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, // position
             {2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, // normal
+            {3, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, // object index
         };
 
     const u32 accumulate_attachment_count = 1;
     VkAttachmentReference
         accumulate_subpass_attachment_refs[trace_attachment_count] = {
-            {3, VK_IMAGE_LAYOUT_GENERAL},
+            {4, VK_IMAGE_LAYOUT_GENERAL},
         };
 
     const u32 accumulate_input_attachment_count = 2;
     VkAttachmentReference
         accumulate_input_attachment_refs[accumulate_input_attachment_count] = {
             {0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, // frame
-            {3, VK_IMAGE_LAYOUT_GENERAL},                  // accumulation
+            {4, VK_IMAGE_LAYOUT_GENERAL},                  // accumulation
         };
     const u32 subpass_desc_count = 3;
     VkSubpassDescription subpass_descs[subpass_desc_count] = {
@@ -1000,11 +1020,11 @@ Renderer renderer_create(SDL_Window *window) {
             },
         };
 
-    const u32 attachment_desc_count = 5;
+    const u32 attachment_desc_count = 6;
     VkAttachmentDescription attachment_descs[attachment_desc_count] = {
-        color_attachment_desc,  position_attachment_desc,
-        normal_attachment_desc, accumulation_attachment_desc,
-        depth_attachment_desc,
+        color_attachment_desc,        position_attachment_desc,
+        normal_attachment_desc,       object_index_attachment_desc,
+        accumulation_attachment_desc, depth_attachment_desc,
     };
     VkRenderPassCreateInfo render_pass_create_info = (VkRenderPassCreateInfo){
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
@@ -1097,7 +1117,7 @@ Renderer renderer_create(SDL_Window *window) {
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .magFilter = VK_FILTER_NEAREST,
         .minFilter = VK_FILTER_NEAREST,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
         .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
@@ -1115,9 +1135,9 @@ Renderer renderer_create(SDL_Window *window) {
   { // create descriptor pool
     const u32 pool_sizes_len = 3;
     VkDescriptorPoolSize pool_sizes[pool_sizes_len] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5},
-        {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 4},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},
+        {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 5},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
     };
 
     VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
@@ -1191,7 +1211,9 @@ Renderer renderer_create(SDL_Window *window) {
             (VkVertexInputAttributeDescription){
                 .binding = 0,
                 .location = 0,
-                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .format =
+                    VK_FORMAT_R32G32B32A32_SFLOAT, // NOTE: the A32 here is
+                                                   // actually the object index
                 .offset = offsetof(Vertex, position),
             },
             (VkVertexInputAttributeDescription){
@@ -1201,20 +1223,28 @@ Renderer renderer_create(SDL_Window *window) {
                 .offset = offsetof(Vertex, normal),
             },
         };
-    VkPipelineColorBlendAttachmentState blend_attachment_states[] = {
-        (VkPipelineColorBlendAttachmentState){
-            .colorWriteMask =
-                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-            .blendEnable = VK_FALSE,
-        },
-        (VkPipelineColorBlendAttachmentState){
-            .colorWriteMask =
-                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-            .blendEnable = VK_FALSE,
-        },
-    };
+    const u32 blend_attachment_states_count = 3;
+    VkPipelineColorBlendAttachmentState
+        blend_attachment_states[blend_attachment_states_count] = {
+            (VkPipelineColorBlendAttachmentState){
+                .colorWriteMask =
+                    VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+                .blendEnable = VK_FALSE,
+            },
+            (VkPipelineColorBlendAttachmentState){
+                .colorWriteMask =
+                    VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+                .blendEnable = VK_FALSE,
+            },
+            (VkPipelineColorBlendAttachmentState){
+                .colorWriteMask =
+                    VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+                .blendEnable = VK_FALSE,
+            },
+        };
     VkGraphicsPipelineCreateInfo first_bounce_pipeline_create_info =
         (VkGraphicsPipelineCreateInfo){
             .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -1283,7 +1313,7 @@ Renderer renderer_create(SDL_Window *window) {
                         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                     .logicOpEnable = VK_FALSE,
                     // .logicOp = VK_LOGIC_OP_COPY,
-                    .attachmentCount = 2,
+                    .attachmentCount = blend_attachment_states_count,
                     .pAttachments = blend_attachment_states,
                 },
             .pDynamicState =
@@ -1304,7 +1334,7 @@ Renderer renderer_create(SDL_Window *window) {
   }
 
   { // path trace pipeline
-    const u32 binding_count = 6;
+    const u32 binding_count = 8;
     VkDescriptorSetLayoutBinding bindings[binding_count] = {
         {
             .binding = 0,
@@ -1320,7 +1350,7 @@ Renderer renderer_create(SDL_Window *window) {
         },
         {
             .binding = 2,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
@@ -1338,7 +1368,19 @@ Renderer renderer_create(SDL_Window *window) {
         },
         {
             .binding = 5,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 6,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 7,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         },
@@ -1675,7 +1717,7 @@ Renderer renderer_create(SDL_Window *window) {
   }
 
   { // present pipeline
-    const u32 binding_count = 4;
+    const u32 binding_count = 5;
     VkDescriptorSetLayoutBinding bindings[binding_count] = {
         {
             .binding = 0,
@@ -1697,6 +1739,12 @@ Renderer renderer_create(SDL_Window *window) {
         },
         {
             .binding = 3,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 4,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1908,6 +1956,7 @@ void recreate_swapchain(Renderer *self) {
   destroy_framebuffer_attachment(self, &self->depth_attachment);
   destroy_framebuffer_attachment(self, &self->position_attachment);
   destroy_framebuffer_attachment(self, &self->normal_attachment);
+  destroy_framebuffer_attachment(self, &self->object_index_attachment);
   destroy_framebuffer_attachment(self, &self->trace_output_attachment);
   destroy_framebuffer_attachment(self, &self->trace_accumulation_attachment);
 
@@ -1924,7 +1973,7 @@ void recreate_swapchain(Renderer *self) {
   create_swapchain(self);
   create_framebuffers(self);
 
-  const u32 trace_input_descriptor_set_writes_count = 6;
+  const u32 trace_input_descriptor_set_writes_count = 7;
   VkWriteDescriptorSet trace_input_descriptor_set_writes
       [trace_input_descriptor_set_writes_count] = {
           {
@@ -1957,13 +2006,13 @@ void recreate_swapchain(Renderer *self) {
               .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
               .dstSet = self->trace_descriptor_set,
               .dstBinding = 2,
-              .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+              .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
               .descriptorCount = 1,
-              .pBufferInfo =
-                  &(VkDescriptorBufferInfo){
-                      .buffer = self->vertex_buffer,
-                      .offset = 0,
-                      .range = VK_WHOLE_SIZE,
+              .pImageInfo =
+                  &(VkDescriptorImageInfo){
+                      .imageView = self->object_index_attachment.view,
+                      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      .sampler = self->vec3_sampler,
                   },
           },
           {
@@ -1974,7 +2023,7 @@ void recreate_swapchain(Renderer *self) {
               .descriptorCount = 1,
               .pBufferInfo =
                   &(VkDescriptorBufferInfo){
-                      .buffer = self->index_buffer,
+                      .buffer = self->vertex_buffer.handle,
                       .offset = 0,
                       .range = VK_WHOLE_SIZE,
                   },
@@ -1987,7 +2036,7 @@ void recreate_swapchain(Renderer *self) {
               .descriptorCount = 1,
               .pBufferInfo =
                   &(VkDescriptorBufferInfo){
-                      .buffer = self->bvh_buffer,
+                      .buffer = self->index_buffer.handle,
                       .offset = 0,
                       .range = VK_WHOLE_SIZE,
                   },
@@ -1996,6 +2045,19 @@ void recreate_swapchain(Renderer *self) {
               .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
               .dstSet = self->trace_descriptor_set,
               .dstBinding = 5,
+              .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+              .descriptorCount = 1,
+              .pBufferInfo =
+                  &(VkDescriptorBufferInfo){
+                      .buffer = self->bvh_buffer.handle,
+                      .offset = 0,
+                      .range = VK_WHOLE_SIZE,
+                  },
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->trace_descriptor_set,
+              .dstBinding = 6,
               .dstArrayElement = 0,
               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
               .descriptorCount = 1,
@@ -2047,23 +2109,9 @@ void recreate_swapchain(Renderer *self) {
                          accumulate_sampler_descriptor_set_writes_count,
                          accumulate_sampler_descriptor_set_writes, 0, NULL);
 
-  const u32 present_sampler_descriptor_set_writes_count = 4;
+  const u32 present_sampler_descriptor_set_writes_count = 5;
   VkWriteDescriptorSet present_sampler_descriptor_set_writes
       [present_sampler_descriptor_set_writes_count] = {
-          {
-              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-              .dstSet = self->present_descriptor_set,
-              .dstBinding = 1,
-              .dstArrayElement = 0,
-              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-              .descriptorCount = 1,
-              .pImageInfo =
-                  &(VkDescriptorImageInfo){
-                      .imageView = self->normal_attachment.view,
-                      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                      .sampler = self->vec3_sampler,
-                  },
-          },
           {
               .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
               .dstSet = self->present_descriptor_set,
@@ -2081,7 +2129,35 @@ void recreate_swapchain(Renderer *self) {
           {
               .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
               .dstSet = self->present_descriptor_set,
+              .dstBinding = 1,
+              .dstArrayElement = 0,
+              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+              .descriptorCount = 1,
+              .pImageInfo =
+                  &(VkDescriptorImageInfo){
+                      .imageView = self->normal_attachment.view,
+                      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      .sampler = self->vec3_sampler,
+                  },
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->present_descriptor_set,
               .dstBinding = 2,
+              .dstArrayElement = 0,
+              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+              .descriptorCount = 1,
+              .pImageInfo =
+                  &(VkDescriptorImageInfo){
+                      .imageView = self->object_index_attachment.view,
+                      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      .sampler = self->vec3_sampler,
+                  },
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->present_descriptor_set,
+              .dstBinding = 3,
               .dstArrayElement = 0,
               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
               .descriptorCount = 1,
@@ -2095,7 +2171,7 @@ void recreate_swapchain(Renderer *self) {
           {
               .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
               .dstSet = self->present_descriptor_set,
-              .dstBinding = 3,
+              .dstBinding = 4,
               .dstArrayElement = 0,
               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
               .descriptorCount = 1,
@@ -2124,6 +2200,50 @@ void renderer_resize(Renderer *self, u32 width, u32 height) {
   recreate_swapchain(self);
 }
 
+Buffer create_buffer(Renderer *self, u32 size, void *data,
+                     VkBufferUsageFlags usage) {
+  VkBufferCreateInfo vb_create_info = (VkBufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = size,
+      .usage = usage,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  VkBuffer buffer;
+  vkCreateBuffer(self->device, &vb_create_info, NULL, &buffer);
+
+  VkMemoryRequirements mem_reqs;
+  vkGetBufferMemoryRequirements(self->device, buffer, &mem_reqs);
+
+  VkMemoryAllocateInfo allocate_info = (VkMemoryAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = mem_reqs.size,
+      .memoryTypeIndex =
+          find_memory_type(self, mem_reqs.memoryTypeBits,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+  };
+  VkDeviceMemory memory;
+  ASSURE_VK(vkAllocateMemory(self->device, &allocate_info, NULL, &memory));
+  vkBindBufferMemory(self->device, buffer, memory, 0);
+
+  void *mapped_mem;
+  vkMapMemory(self->device, memory, 0, size, 0, &mapped_mem);
+  memcpy(mapped_mem, data, size);
+  vkUnmapMemory(self->device, memory);
+
+  return (Buffer){
+      .handle = buffer,
+      .memory = memory,
+  };
+}
+
+void destroy_buffer(Renderer *self, Buffer *buffer) {
+  if (buffer->handle != VK_NULL_HANDLE) {
+    vkDestroyBuffer(self->device, buffer->handle, NULL);
+    vkFreeMemory(self->device, buffer->memory, NULL);
+  }
+}
+
 void renderer_destroy(Renderer *self) {
   vkDeviceWaitIdle(self->device);
 
@@ -2135,20 +2255,10 @@ void renderer_destroy(Renderer *self) {
     vkFreeMemory(self->device, self->envlight_image_memory, NULL);
   }
 
-  if (self->vertex_buffer != VK_NULL_HANDLE) {
-    vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
-    vkFreeMemory(self->device, self->vertex_buffer_memory, NULL);
-  }
-
-  if (self->index_buffer != VK_NULL_HANDLE) {
-    vkDestroyBuffer(self->device, self->index_buffer, NULL);
-    vkFreeMemory(self->device, self->index_buffer_memory, NULL);
-  }
-
-  if (self->bvh_buffer != VK_NULL_HANDLE) {
-    vkDestroyBuffer(self->device, self->bvh_buffer, NULL);
-    vkFreeMemory(self->device, self->bvh_buffer_memory, NULL);
-  }
+  destroy_buffer(self, &self->material_buffer);
+  destroy_buffer(self, &self->vertex_buffer);
+  destroy_buffer(self, &self->index_buffer);
+  destroy_buffer(self, &self->bvh_buffer);
 
   for (usize i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
     PerFrameData *frame = &self->frame_data[i];
@@ -2163,6 +2273,7 @@ void renderer_destroy(Renderer *self) {
 
   destroy_framebuffer_attachment(self, &self->depth_attachment);
   destroy_framebuffer_attachment(self, &self->normal_attachment);
+  destroy_framebuffer_attachment(self, &self->object_index_attachment);
   destroy_framebuffer_attachment(self, &self->position_attachment);
   destroy_framebuffer_attachment(self, &self->trace_output_attachment);
   destroy_framebuffer_attachment(self, &self->trace_accumulation_attachment);
@@ -2220,86 +2331,21 @@ void renderer_destroy(Renderer *self) {
   vkDestroyInstance(self->instance, NULL);
 }
 
-typedef struct {
-  VkBuffer buffer;
-  VkDeviceMemory memory;
-} BufferResult;
-
-BufferResult create_buffer(Renderer *self, u32 size, void *data,
-                           VkBufferUsageFlags usage) {
-  VkBufferCreateInfo vb_create_info = (VkBufferCreateInfo){
-      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-      .size = size,
-      .usage = usage,
-      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-  };
-  VkBuffer buffer;
-  vkCreateBuffer(self->device, &vb_create_info, NULL, &buffer);
-
-  VkMemoryRequirements mem_reqs;
-  vkGetBufferMemoryRequirements(self->device, buffer, &mem_reqs);
-
-  VkMemoryAllocateInfo allocate_info = (VkMemoryAllocateInfo){
-      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-      .allocationSize = mem_reqs.size,
-      .memoryTypeIndex =
-          find_memory_type(self, mem_reqs.memoryTypeBits,
-                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-  };
-  VkDeviceMemory memory;
-  ASSURE_VK(vkAllocateMemory(self->device, &allocate_info, NULL, &memory));
-  vkBindBufferMemory(self->device, buffer, memory, 0);
-
-  void *mapped_mem;
-  vkMapMemory(self->device, memory, 0, size, 0, &mapped_mem);
-  memcpy(mapped_mem, data, size);
-  vkUnmapMemory(self->device, memory);
-
-  return (BufferResult){
-      .buffer = buffer,
-      .memory = memory,
-  };
-}
-
-void renderer_set_object(Renderer *self, TriangleMesh *mesh) {
-  vkDeviceWaitIdle(self->device);
-
-  self->mesh = mesh;
-
-  if (self->vertex_buffer != VK_NULL_HANDLE) {
-    vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
-    vkFreeMemory(self->device, self->vertex_buffer_memory, NULL);
-    self->vertex_buffer = VK_NULL_HANDLE;
-  }
-  if (self->index_buffer != VK_NULL_HANDLE) {
-    vkDestroyBuffer(self->device, self->index_buffer, NULL);
-    vkFreeMemory(self->device, self->index_buffer_memory, NULL);
-    self->index_buffer = VK_NULL_HANDLE;
-  }
-  if (self->bvh_buffer != VK_NULL_HANDLE) {
-    vkDestroyBuffer(self->device, self->bvh_buffer, NULL);
-    vkFreeMemory(self->device, self->bvh_buffer_memory, NULL);
-    self->bvh_buffer = VK_NULL_HANDLE;
+void renderer_set_or_update_materials(Renderer *self) {
+  if (self->material_buffer.handle == VK_NULL_HANDLE) {
+    self->material_buffer =
+        create_buffer(self, self->material_count * sizeof(Material),
+                      self->materials, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    self->material_buffer_size = self->material_count * sizeof(Material);
+  } else {
+    void *materials = NULL;
+    vkMapMemory(self->device, self->material_buffer.memory, 0, VK_WHOLE_SIZE, 0,
+                &materials);
+    memcpy(materials, self->materials, self->material_count * sizeof(Material));
+    vkUnmapMemory(self->device, self->material_buffer.memory);
   }
 
-  BufferResult res = create_buffer(
-      self, self->mesh->vertex_count * sizeof(Vertex), self->mesh->vertices,
-      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-  self->vertex_buffer = res.buffer;
-  self->vertex_buffer_memory = res.memory;
-
-  res = create_buffer(
-      self, self->mesh->index_count * sizeof(u32), self->mesh->indices,
-      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-  self->index_buffer = res.buffer;
-  self->index_buffer_memory = res.memory;
-
-  res =
-      create_buffer(self, self->mesh->bvh_node_count * sizeof(BvhNode),
-                    self->mesh->bvh_nodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-  self->bvh_buffer = res.buffer;
-  self->bvh_buffer_memory = res.memory;
+  self->accumulated_frames = 0;
 }
 
 void renderer_set_envlight(Renderer *self, EnvironmentLight *envlight) {
@@ -2347,7 +2393,7 @@ void renderer_set_envlight(Renderer *self, EnvironmentLight *envlight) {
   vkBindImageMemory(self->device, self->envlight_image,
                     self->envlight_image_memory, 0);
 
-  BufferResult staging_buffer =
+  Buffer staging_buffer =
       create_buffer(self, sizeof(vec4) * envlight->width * envlight->height,
                     envlight->light_data, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
@@ -2388,7 +2434,7 @@ void renderer_set_envlight(Renderer *self, EnvironmentLight *envlight) {
       .imageOffset = {0, 0, 0},
       .imageExtent = image_extent,
   };
-  vkCmdCopyBufferToImage(cmdbuffer, staging_buffer.buffer, self->envlight_image,
+  vkCmdCopyBufferToImage(cmdbuffer, staging_buffer.handle, self->envlight_image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
   image_memory_barrier = (VkImageMemoryBarrier){
@@ -2415,8 +2461,7 @@ void renderer_set_envlight(Renderer *self, EnvironmentLight *envlight) {
 
   end_immediate_submit(self, cmdbuffer);
 
-  vkDestroyBuffer(self->device, staging_buffer.buffer, NULL);
-  vkFreeMemory(self->device, staging_buffer.memory, NULL);
+  destroy_buffer(self, &staging_buffer);
 
   VkImageViewCreateInfo image_view_create_info = (VkImageViewCreateInfo){
       .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -2443,20 +2488,87 @@ void renderer_set_envlight(Renderer *self, EnvironmentLight *envlight) {
                               &self->envlight_image_view));
 }
 
+void renderer_set_scene(Renderer *self, Scene *scene) {
+  vkDeviceWaitIdle(self->device);
+
+  renderer_set_envlight(self, &scene->envlight);
+
+  self->mesh = scene_create_unified_mesh(scene);
+
+  destroy_buffer(self, &self->vertex_buffer);
+  destroy_buffer(self, &self->index_buffer);
+  destroy_buffer(self, &self->bvh_buffer);
+
+  self->vertex_buffer = create_buffer(
+      self, self->mesh.vertex_count * sizeof(Vertex), self->mesh.vertices,
+      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+  self->index_buffer = create_buffer(
+      self, self->mesh.index_count * sizeof(u32), self->mesh.indices,
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+  self->bvh_buffer =
+      create_buffer(self, self->mesh.bvh_node_count * sizeof(BvhNode),
+                    self->mesh.bvh_nodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+  self->materials = scene->materials;
+  self->material_count = scene->object_count;
+
+  renderer_set_or_update_materials(self);
+  VkWriteDescriptorSet material_desc_set_write = {
+      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+      .dstSet = self->trace_descriptor_set,
+      .dstBinding = 7,
+      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      .descriptorCount = 1,
+      .pBufferInfo =
+          &(VkDescriptorBufferInfo){
+              .buffer = self->material_buffer.handle,
+              .offset = 0,
+              .range = VK_WHOLE_SIZE,
+          },
+  };
+  vkUpdateDescriptorSets(self->device, 1, &material_desc_set_write, 0, NULL);
+}
+
 void renderer_draw_gui(Renderer *self) {
   if (igCollapsingHeader_BoolPtr("Camera", NULL,
                                  ImGuiTreeNodeFlags_DefaultOpen |
                                      ImGuiTreeNodeFlags_CollapsingHeader)) {
     bool camera_changed = false;
-    camera_changed |= igSliderFloat("focal dist", &self->camera_focal_dist,
+    camera_changed |= igSliderFloat("focal distance", &self->camera_focal_dist,
                                     0.001, 100.0, "%f", 0);
     camera_changed |=
-        igSliderFloat("radius", &self->camera_lens_radius, 0.0, 1.0, "%f", 0);
+        igSliderFloat("radius", &self->camera_lens_radius, 0.0, 5.0, "%f", 0);
     camera_changed |=
         igSliderFloat("FOV", &self->camera_fov, 0.01, 180.0, "%.1fdeg", 0);
 
     if (camera_changed) {
       renderer_set_or_update_camera(self);
+    }
+  }
+
+  if (igTreeNodeEx_Str("Objects", (ImGuiTreeNodeFlags_DefaultOpen |
+                                   ImGuiTreeNodeFlags_Framed))) {
+    bool materials_changed = false;
+
+    for (u32 i = 0; i < self->material_count; i++) {
+      igPushID_Ptr(&self->materials[i]);
+      if (igTreeNodeEx_StrStr("object",
+                              ImGuiTreeNodeFlags_DefaultOpen |
+                                  ImGuiTreeNodeFlags_CollapsingHeader,
+                              "object %u", i)) {
+        if (igColorEdit3("albedo", self->materials[i].albedo.v,
+                         ImGuiColorEditFlags_HDR)) {
+          materials_changed = true;
+        }
+      }
+      igPopID();
+    }
+    igTreePop();
+
+    if (materials_changed) {
+      renderer_set_or_update_materials(self);
     }
   }
 }
@@ -2489,7 +2601,7 @@ void renderer_update(Renderer *self) {
   };
   ASSURE_VK(vkBeginCommandBuffer(cmdbuffer, &cmdbuffer_begin_info));
 
-  const u32 render_pass_clear_value_count = 5;
+  const u32 render_pass_clear_value_count = 6;
   VkClearValue render_pass_clear_values[render_pass_clear_value_count] = {
       (VkClearValue){
           .color = (VkClearColorValue){0.0f, 0.0f, 0.0f, 1.0f},
@@ -2499,6 +2611,9 @@ void renderer_update(Renderer *self) {
       },
       (VkClearValue){
           .color = (VkClearColorValue){0.0f, 0.0f, 0.0f, 1.0f},
+      },
+      (VkClearValue){
+          .color = (VkClearColorValue){.uint32 = {NULL_OBJECT_ID}},
       },
       (VkClearValue){}, // unused
       (VkClearValue){.depthStencil = (VkClearDepthStencilValue){1.0f, 0}},
@@ -2550,16 +2665,16 @@ void renderer_update(Renderer *self) {
       cmdbuffer, self->first_bounce_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
       0, sizeof(FirstBouncePushConstants), &first_bounce_push_constants);
 
-  VkBuffer buffers[] = {self->vertex_buffer};
+  VkBuffer buffers[] = {self->vertex_buffer.handle};
   VkDeviceSize offsets[] = {0};
   vkCmdBindVertexBuffers(cmdbuffer, 0, 1, buffers, offsets);
 
-  if (self->index_buffer != VK_NULL_HANDLE) {
-    vkCmdBindIndexBuffer(cmdbuffer, self->index_buffer, 0,
+  if (self->index_buffer.handle != VK_NULL_HANDLE) {
+    vkCmdBindIndexBuffer(cmdbuffer, self->index_buffer.handle, 0,
                          VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmdbuffer, self->mesh->index_count, 1, 0, 0, 0);
+    vkCmdDrawIndexed(cmdbuffer, self->mesh.index_count, 1, 0, 0, 0);
   } else {
-    vkCmdDraw(cmdbuffer, self->mesh->vertex_count, 1, 0, 0);
+    vkCmdDraw(cmdbuffer, self->mesh.vertex_count, 1, 0, 0);
   }
 
   vkCmdNextSubpass(cmdbuffer, VK_SUBPASS_CONTENTS_INLINE);
@@ -2571,10 +2686,11 @@ void renderer_update(Renderer *self) {
                     self->trace_pipeline);
 
   PathTracePushConstants path_trace_push_constants = {
-      .index_count = self->mesh->index_count,
-      .vertex_count = self->mesh->vertex_count,
-      .node_count = self->mesh->bvh_node_count,
+      .index_count = self->mesh.index_count,
+      .vertex_count = self->mesh.vertex_count,
+      .node_count = self->mesh.bvh_node_count,
       .frame = self->frame,
+      .object_count = self->material_count,
       .env_focal_dist = self->camera_focal_dist,
       .env_lens_radius = self->camera_lens_radius,
   };
@@ -2639,10 +2755,10 @@ void renderer_update(Renderer *self) {
   vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     self->present_pipeline);
 
-  const u32 num_items = 4;
-  const char *items[num_items] = {"position", "normal", "color",
+  const u32 num_items = 5;
+  const char *items[num_items] = {"position", "normal", "object id", "color",
                                   "accumulation"};
-  static u32 current_item = 3;
+  static u32 current_item = 4;
   if (igBeginCombo("present mode", items[current_item], 0)) {
     for (u32 i = 0; i < num_items; i++) {
       bool selected = (current_item == i);

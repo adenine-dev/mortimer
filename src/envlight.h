@@ -10,5 +10,6 @@ typedef struct {
 } EnvironmentLight;
 
 EnvironmentLight envlight_new_from_file(const char *filename);
+EnvironmentLight envlight_new_blank_sky();
 
 void envlight_destroy(EnvironmentLight *envlight);

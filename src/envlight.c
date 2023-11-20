@@ -6,6 +6,21 @@
 #include "log.h"
 #include "types.h"
 
+EnvironmentLight envlight_new_blank_sky() {
+  const u32 RESOLUTION = 32;
+  vec4 *light_data = malloc(sizeof(vec4) * RESOLUTION);
+  for (u32 i = 0; i < RESOLUTION; ++i) {
+    f32 t = (f32)i / (f32)RESOLUTION;
+    light_data[i] = vec4New(1.0, 1.0 - t, 1.0, 1.0);
+  }
+
+  return (EnvironmentLight){
+      .width = 1,
+      .height = RESOLUTION,
+      .light_data = light_data,
+  };
+}
+
 EnvironmentLight envlight_new_from_file(const char *filename) {
   if (!stbi_is_hdr(filename)) {
     fatalln("cannot use non-hdr file `%s` for environment light", filename);

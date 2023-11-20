@@ -14,6 +14,7 @@
 #include "log.h"
 #include "maths.h"
 #include "renderer.h"
+#include "scene.h"
 #include "trimesh.h"
 #include "types.h"
 
@@ -37,23 +38,18 @@ int main(int argc, char **argv) {
 
   Renderer renderer = renderer_create(window);
 
-  EnvironmentLight envlight =
-      envlight_new_from_file("assets/hdris/sunset_jhbcentral_4k.hdr");
+  Scene scene = scene_new();
+  scene_add_object(&scene, "assets/models/lucy.obj",
+                   (Material){.albedo = vec3New(0.84, 0.9, 0.6)});
+  scene_add_object(&scene, "assets/models/suzanne.obj",
+                   (Material){.albedo = vec3New(0.84, 0.6, 0.9)});
+  scene_add_object(&scene, "assets/models/xyzrgb_dragon.obj",
+                   (Material){.albedo = vec3New(0.6, 0.84, 0.9)});
+  scene_add_object(&scene, "assets/models/ground.obj",
+                   (Material){.albedo = vec3New(0.2, 0.2, 0.2)});
+  scene_set_envlight(&scene, "assets/hdris/sunset_jhbcentral_4k.hdr");
 
-  renderer_set_envlight(&renderer, &envlight);
-
-  // ObjMesh obj = load_obj("assets/models/suzanne.obj");
-  ObjMesh obj = load_obj("assets/models/xyzrgb_dragon.obj");
-  Vertex *vb = malloc(obj.vertex_count * sizeof(Vertex));
-  for (usize i = 0; i < obj.vertex_count; i++) {
-    vb[i] = (Vertex){
-        .position = obj.positions[i],
-        .normal = obj.normals[i],
-    };
-  }
-  TriangleMesh mesh =
-      trimesh_new(vb, obj.vertex_count, obj.indicies, obj.index_count);
-  renderer_set_object(&renderer, &mesh);
+  renderer_set_scene(&renderer, &scene);
 
   SDL_Event event;
   bool running = true;
@@ -131,8 +127,6 @@ int main(int argc, char **argv) {
   }
 
   renderer_destroy(&renderer);
-  envlight_destroy(&envlight);
-  trimesh_destroy(mesh);
 
   SDL_DestroyWindow(window);
   SDL_Quit();

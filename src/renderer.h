@@ -9,8 +9,11 @@
 #include "envlight.h"
 #include "imgui_renderer.h"
 #include "log.h"
+#include "scene.h"
 #include "trimesh.h"
 #include "types.h"
+
+static const u32 MAX_FRAMES_IN_FLIGHT = 2;
 
 typedef struct {
   VkPhysicalDevice device;
@@ -22,8 +25,6 @@ typedef struct {
   VkExtent2D swapchain_extent;
   VkFormat depth_format;
 } PhysicalDeviceInfo;
-
-static const u32 MAX_FRAMES_IN_FLIGHT = 2;
 
 typedef struct {
   VkSemaphore image_available;
@@ -41,6 +42,11 @@ typedef struct {
   VkFormat format;
 } FramebufferAttachment;
 
+typedef struct {
+  VkBuffer handle;
+  VkDeviceMemory memory;
+} Buffer;
+
 typedef struct Renderer_t {
   // direct vulkan stuffs
   VkInstance instance;
@@ -57,10 +63,12 @@ typedef struct Renderer_t {
   VkImageView *swapchain_image_views;
 
   FramebufferAttachment depth_attachment;
-  FramebufferAttachment normal_attachment;
   FramebufferAttachment position_attachment;
+  FramebufferAttachment normal_attachment;
+  FramebufferAttachment object_index_attachment;
   FramebufferAttachment trace_output_attachment;
   FramebufferAttachment trace_accumulation_attachment;
+
   VkSampler vec3_sampler;
 
   VkCommandPool command_pool;
@@ -98,16 +106,15 @@ typedef struct Renderer_t {
   f32 camera_focal_dist;
   u32 accumulated_frames;
 
-  TriangleMesh *mesh;
+  TriangleMesh mesh;
+  Buffer vertex_buffer;
+  Buffer index_buffer;
+  Buffer bvh_buffer;
 
-  VkBuffer vertex_buffer;
-  VkDeviceMemory vertex_buffer_memory;
-
-  VkBuffer index_buffer;
-  VkDeviceMemory index_buffer_memory;
-
-  VkBuffer bvh_buffer;
-  VkDeviceMemory bvh_buffer_memory;
+  u32 material_count;
+  Material *materials;
+  u32 material_buffer_size;
+  Buffer material_buffer;
 
   EnvironmentLight *envlight;
   VkImage envlight_image;
@@ -122,8 +129,7 @@ void renderer_destroy(Renderer *self);
 void renderer_update(Renderer *self);
 void renderer_resize(Renderer *self, u32 width, u32 height);
 
-void renderer_set_object(Renderer *self, TriangleMesh *mesh);
-void renderer_set_envlight(Renderer *self, EnvironmentLight *envlight);
+void renderer_set_scene(Renderer *self, Scene *scene);
 
 #define ASSURE_VK(expr)                                                        \
   {                                                                            \

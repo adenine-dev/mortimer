@@ -422,6 +422,52 @@ void end_immediate_submit(Renderer *self, VkCommandBuffer command_buffer) {
   vkFreeCommandBuffers(self->device, self->command_pool, 1, &command_buffer);
 }
 
+Buffer create_buffer(Renderer *self, u32 size, void *data,
+                     VkBufferUsageFlags usage) {
+  VkBufferCreateInfo vb_create_info = (VkBufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = size,
+      .usage = usage,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  VkBuffer buffer;
+  vkCreateBuffer(self->device, &vb_create_info, NULL, &buffer);
+
+  VkMemoryRequirements mem_reqs;
+  vkGetBufferMemoryRequirements(self->device, buffer, &mem_reqs);
+
+  VkMemoryAllocateInfo allocate_info = (VkMemoryAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = mem_reqs.size,
+      .memoryTypeIndex =
+          find_memory_type(self, mem_reqs.memoryTypeBits,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+  };
+  VkDeviceMemory memory;
+  ASSURE_VK(vkAllocateMemory(self->device, &allocate_info, NULL, &memory));
+  vkBindBufferMemory(self->device, buffer, memory, 0);
+
+  if (data) {
+    void *mapped_mem;
+    vkMapMemory(self->device, memory, 0, size, 0, &mapped_mem);
+    memcpy(mapped_mem, data, size);
+    vkUnmapMemory(self->device, memory);
+  }
+
+  return (Buffer){
+      .handle = buffer,
+      .memory = memory,
+  };
+}
+
+void destroy_buffer(Renderer *self, Buffer *buffer) {
+  if (buffer->handle != VK_NULL_HANDLE) {
+    vkDestroyBuffer(self->device, buffer->handle, NULL);
+    vkFreeMemory(self->device, buffer->memory, NULL);
+  }
+}
+
 void create_swapchain(Renderer *self) {
   VkSwapchainCreateInfoKHR swapchain_create_info = (VkSwapchainCreateInfoKHR){
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -431,7 +477,8 @@ void create_swapchain(Renderer *self) {
       .imageColorSpace = self->physical_device_info.surface_format.colorSpace,
       .imageExtent = self->physical_device_info.swapchain_extent,
       .imageArrayLayers = 1,
-      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .imageUsage =
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
       .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
       .preTransform =
           self->physical_device_info.surface_capabilities.currentTransform,
@@ -524,7 +571,8 @@ void create_swapchain(Renderer *self) {
   self->trace_accumulation_attachment = create_framebuffer_attachment(
       self, VK_FORMAT_R32G32B32A32_SFLOAT,
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-          VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
+          VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
+          VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 
   // transition the trace accumulation attachment
   {
@@ -614,6 +662,13 @@ void create_framebuffers(Renderer *self) {
                                     NULL, &self->swapchain_framebuffers[i]));
     }
   }
+
+  self->fully_rendered_image_buffer = create_buffer(
+      self,
+      sizeof(vec4) * self->physical_device_info.swapchain_extent.width *
+          self->physical_device_info.swapchain_extent.height,
+      NULL,
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
 }
 
 void renderer_set_or_update_camera(Renderer *self) {
@@ -1048,7 +1103,7 @@ Renderer renderer_create(SDL_Window *window) {
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
     };
 
     VkAttachmentReference swapchain_attachment_ref = {
@@ -1109,7 +1164,81 @@ Renderer renderer_create(SDL_Window *window) {
         .pDependencies = render_pass_dependencies,
     };
     ASSURE_VK(vkCreateRenderPass(renderer.device, &render_pass_create_info,
-                                 NULL, &renderer.present_render_pass))
+                                 NULL, &renderer.present_render_pass));
+  }
+
+  { // create attachments and gui renderpass
+
+    VkAttachmentDescription swapchain_attachment_desc = {
+        .format = renderer.physical_device_info.surface_format.format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+
+    VkAttachmentReference swapchain_attachment_ref = {
+        .attachment = 0,
+        .layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    };
+
+    const u32 present_attachment_count = 1;
+    VkAttachmentReference
+        present_subpass_attachment_refs[present_attachment_count] = {
+            {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+        };
+    const u32 subpass_desc_count = 1;
+    VkSubpassDescription subpass_descs[subpass_desc_count] = {
+        (VkSubpassDescription){
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = present_attachment_count,
+            .pColorAttachments = present_subpass_attachment_refs,
+        },
+    };
+
+    const u32 render_pass_dependency_count = 2;
+    VkSubpassDependency render_pass_dependencies[render_pass_dependency_count] =
+        {
+            {
+                .srcSubpass = VK_SUBPASS_EXTERNAL,
+                .dstSubpass = 0,
+                .srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+            },
+            {
+                .srcSubpass = 0,
+                .dstSubpass = VK_SUBPASS_EXTERNAL,
+                .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+            },
+        };
+
+    const u32 attachment_desc_count = 1;
+    VkAttachmentDescription attachment_descs[attachment_desc_count] = {
+        swapchain_attachment_desc,
+    };
+    VkRenderPassCreateInfo render_pass_create_info = (VkRenderPassCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = attachment_desc_count,
+        .pAttachments = attachment_descs,
+        .subpassCount = subpass_desc_count,
+        .pSubpasses = subpass_descs,
+        .dependencyCount = render_pass_dependency_count,
+        .pDependencies = render_pass_dependencies,
+    };
+    ASSURE_VK(vkCreateRenderPass(renderer.device, &render_pass_create_info,
+                                 NULL, &renderer.gui_render_pass));
   }
 
   { // create samplers
@@ -1935,6 +2064,8 @@ Renderer renderer_create(SDL_Window *window) {
     renderer_set_or_update_camera(&renderer);
   }
 
+  renderer.present_mode = PRESENT_MODE_ACCUMULATION;
+
   renderer.imgui_impl = init_imgui_render_impl(&renderer, window);
 
   return renderer;
@@ -1952,6 +2083,8 @@ void destroy_framebuffer_attachment(Renderer *renderer,
 // is Fine but not actually. shrug its late and i'm sleepy lol.
 void recreate_swapchain(Renderer *self) {
   vkDeviceWaitIdle(self->device);
+
+  destroy_buffer(self, &self->fully_rendered_image_buffer);
 
   destroy_framebuffer_attachment(self, &self->depth_attachment);
   destroy_framebuffer_attachment(self, &self->position_attachment);
@@ -2200,50 +2333,6 @@ void renderer_resize(Renderer *self, u32 width, u32 height) {
   recreate_swapchain(self);
 }
 
-Buffer create_buffer(Renderer *self, u32 size, void *data,
-                     VkBufferUsageFlags usage) {
-  VkBufferCreateInfo vb_create_info = (VkBufferCreateInfo){
-      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-      .size = size,
-      .usage = usage,
-      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-  };
-  VkBuffer buffer;
-  vkCreateBuffer(self->device, &vb_create_info, NULL, &buffer);
-
-  VkMemoryRequirements mem_reqs;
-  vkGetBufferMemoryRequirements(self->device, buffer, &mem_reqs);
-
-  VkMemoryAllocateInfo allocate_info = (VkMemoryAllocateInfo){
-      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-      .allocationSize = mem_reqs.size,
-      .memoryTypeIndex =
-          find_memory_type(self, mem_reqs.memoryTypeBits,
-                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-  };
-  VkDeviceMemory memory;
-  ASSURE_VK(vkAllocateMemory(self->device, &allocate_info, NULL, &memory));
-  vkBindBufferMemory(self->device, buffer, memory, 0);
-
-  void *mapped_mem;
-  vkMapMemory(self->device, memory, 0, size, 0, &mapped_mem);
-  memcpy(mapped_mem, data, size);
-  vkUnmapMemory(self->device, memory);
-
-  return (Buffer){
-      .handle = buffer,
-      .memory = memory,
-  };
-}
-
-void destroy_buffer(Renderer *self, Buffer *buffer) {
-  if (buffer->handle != VK_NULL_HANDLE) {
-    vkDestroyBuffer(self->device, buffer->handle, NULL);
-    vkFreeMemory(self->device, buffer->memory, NULL);
-  }
-}
-
 void renderer_destroy(Renderer *self) {
   vkDeviceWaitIdle(self->device);
 
@@ -2270,6 +2359,8 @@ void renderer_destroy(Renderer *self) {
   }
 
   vkDestroySampler(self->device, self->vec3_sampler, NULL);
+
+  destroy_buffer(self, &self->fully_rendered_image_buffer);
 
   destroy_framebuffer_attachment(self, &self->depth_attachment);
   destroy_framebuffer_attachment(self, &self->normal_attachment);
@@ -2305,6 +2396,7 @@ void renderer_destroy(Renderer *self) {
 
   vkDestroyRenderPass(self->device, self->present_render_pass, NULL);
   vkDestroyRenderPass(self->device, self->trace_render_pass, NULL);
+  vkDestroyRenderPass(self->device, self->gui_render_pass, NULL);
 
   vkDestroyDescriptorPool(self->device, self->descriptor_pool, NULL);
 
@@ -2532,9 +2624,29 @@ void renderer_set_scene(Renderer *self, Scene *scene) {
 }
 
 void renderer_draw_gui(Renderer *self) {
+  if (igCollapsingHeader_BoolPtr("Debug", NULL,
+                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+    igText("%.3f ms/frame (%.1f fps)", 1000.0f / igGetIO()->Framerate,
+           igGetIO()->Framerate);
+    igText("Accumulated frames: %u", self->accumulated_frames);
+
+    const u32 num_items = 5;
+    const char *items[num_items] = {"position", "normal", "object id", "color",
+                                    "accumulation"};
+    if (igBeginCombo("present mode", items[self->present_mode], 0)) {
+      for (u32 i = 0; i < num_items; i++) {
+        bool selected = (self->present_mode == i);
+        if (igSelectable_Bool(items[i], selected, 0, (ImVec2){0, 0})) {
+          self->present_mode = i;
+        }
+        if (selected)
+          igSetItemDefaultFocus();
+      }
+      igEndCombo();
+    }
+  }
   if (igCollapsingHeader_BoolPtr("Camera", NULL,
-                                 ImGuiTreeNodeFlags_DefaultOpen |
-                                     ImGuiTreeNodeFlags_CollapsingHeader)) {
+                                 ImGuiTreeNodeFlags_CollapsingHeader)) {
     bool camera_changed = false;
     camera_changed |= igSliderFloat("focal distance", &self->camera_focal_dist,
                                     0.001, 100.0, "%f", 0);
@@ -2755,30 +2867,51 @@ void renderer_update(Renderer *self) {
   vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     self->present_pipeline);
 
-  const u32 num_items = 5;
-  const char *items[num_items] = {"position", "normal", "object id", "color",
-                                  "accumulation"};
-  static u32 current_item = 4;
-  if (igBeginCombo("present mode", items[current_item], 0)) {
-    for (u32 i = 0; i < num_items; i++) {
-      bool selected = (current_item == i);
-      if (igSelectable_Bool(items[i], selected, 0, (ImVec2){0, 0})) {
-        current_item = i;
-      }
-      if (selected)
-        igSetItemDefaultFocus();
-    }
-    igEndCombo();
-  }
-
   PresentPushConstants present_push_constants = {
-      .mode = current_item,
+      .mode = self->present_mode,
   };
   vkCmdPushConstants(cmdbuffer, self->present_pipeline_layout,
                      VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                      sizeof(PresentPushConstants), &present_push_constants);
 
   vkCmdDraw(cmdbuffer, 3, 1, 0, 0);
+
+  vkCmdEndRenderPass(cmdbuffer);
+
+  vkCmdCopyImageToBuffer(
+      cmdbuffer, self->swapchain_images[image_index],
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      self->fully_rendered_image_buffer.handle, 1,
+      &(VkBufferImageCopy){
+          .imageSubresource =
+              (VkImageSubresourceLayers){
+                  .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                  .mipLevel = 0,
+                  .baseArrayLayer = 0,
+                  .layerCount = 1,
+              },
+          .imageOffset = {0, 0, 0},
+          .imageExtent =
+              {
+                  .width = self->physical_device_info.swapchain_extent.width,
+                  .height = self->physical_device_info.swapchain_extent.height,
+                  .depth = 1,
+              },
+      });
+
+  VkRenderPassBeginInfo gui_render_pass_begin_info = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+      .renderPass = self->gui_render_pass,
+      .framebuffer = self->swapchain_framebuffers[image_index],
+      .renderArea =
+          (VkRect2D){
+              .offset.x = 0,
+              .offset.y = 0,
+              .extent = self->physical_device_info.swapchain_extent,
+          },
+  };
+  vkCmdBeginRenderPass(cmdbuffer, &gui_render_pass_begin_info,
+                       VK_SUBPASS_CONTENTS_INLINE);
 
   renderer_draw_gui(self);
 
@@ -2818,5 +2951,61 @@ void renderer_update(Renderer *self) {
   };
 
   vkQueuePresentKHR(self->present_queue, &present_info);
-  //   infoln("-------------------");
+}
+
+void renderer_read_frame(Renderer *self, ReadFrameCallback callback) {
+  u8 *data = NULL;
+  vkMapMemory(self->device, self->fully_rendered_image_buffer.memory, 0,
+              VK_WHOLE_SIZE, 0, (void **)&data);
+
+  callback(self->physical_device_info.swapchain_extent.width,
+           self->physical_device_info.swapchain_extent.height, data);
+
+  vkUnmapMemory(self->device, self->fully_rendered_image_buffer.memory);
+}
+
+void renderer_read_frame_hdr(Renderer *self, ReadFrameHdrCallback callback) {
+  //   vkDeviceWaitIdle(self->device);
+  const u32 transfer_buffer_size =
+      self->physical_device_info.swapchain_extent.width *
+      self->physical_device_info.swapchain_extent.height * sizeof(vec4);
+
+  Buffer transfer_buffer = create_buffer(self, transfer_buffer_size, NULL,
+                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+  VkCommandBuffer cmdbuffer = begin_immediate_submit(self);
+  vkCmdCopyImageToBuffer(
+      cmdbuffer, self->trace_accumulation_attachment.image,
+      VK_IMAGE_LAYOUT_GENERAL, transfer_buffer.handle, 1,
+      &(VkBufferImageCopy){
+          .bufferOffset = 0,
+          .bufferRowLength = 0,
+          .bufferImageHeight = 0,
+          .imageSubresource =
+              (VkImageSubresourceLayers){
+                  .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                  .mipLevel = 0,
+                  .baseArrayLayer = 0,
+                  .layerCount = 1,
+              },
+          .imageOffset = {0, 0, 0},
+          .imageExtent =
+              {
+                  .width = self->physical_device_info.swapchain_extent.width,
+                  .height = self->physical_device_info.swapchain_extent.height,
+                  .depth = 1,
+              },
+      });
+  end_immediate_submit(self, cmdbuffer);
+  vec4 *data = NULL;
+  vkMapMemory(self->device, transfer_buffer.memory, 0, transfer_buffer_size, 0,
+              (void **)&data);
+
+  callback(self->physical_device_info.swapchain_extent.width,
+           self->physical_device_info.swapchain_extent.height, data);
+
+  vkUnmapMemory(self->device, transfer_buffer.memory);
+
+  destroy_buffer(self, &transfer_buffer);
 }

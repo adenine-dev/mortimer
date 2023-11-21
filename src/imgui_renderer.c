@@ -81,7 +81,7 @@ ImguiRendererImpl init_imgui_render_impl(Renderer *renderer,
       .Allocator = NULL,
       .CheckVkResultFn = NULL,
   };
-  if (!ImGui_ImplVulkan_Init(&init_info, renderer->present_render_pass)) {
+  if (!ImGui_ImplVulkan_Init(&init_info, renderer->gui_render_pass)) {
     fatalln("could not init imgui vulkan");
   }
 
@@ -114,111 +114,105 @@ ImguiRendererImpl init_imgui_render_impl(Renderer *renderer,
   ASSURE_VK(vkDeviceWaitIdle(renderer->device));
   ImGui_ImplVulkan_DestroyFontUploadObjects();
 
-  // set styles
-  ImGuiStyle *style = igGetStyle();
-  const u32 background = 0x1F212A;
-  const u32 bg_dark = 0x232830;
-  const u32 frame = 0x343d46;
-  const u32 pink = 0xdda2f6;
-  const u32 grab = 0x65737e;
+  { // set styles
+    ImGuiStyle *style = igGetStyle();
+    const u32 background = 0x1F212A;
+    const u32 bg_dark = 0x232830;
+    const u32 frame = 0x343d46;
+    const u32 pink = 0xdda2f6;
+    const u32 grab = 0x65737e;
 
-  style->Alpha = 1.0;
-  style->FrameRounding = 4.0;
-  style->WindowRounding = 4.0;
-  style->FrameRounding = 2.0;
-  style->PopupRounding = 2.0;
-  style->ChildRounding = 4.0;
-  style->ScrollbarRounding = 10000.0;
-  style->TabRounding = 3.0;
+    style->Alpha = 1.0;
+    style->FrameRounding = 4.0;
+    style->WindowRounding = 4.0;
+    style->FrameRounding = 2.0;
+    style->PopupRounding = 2.0;
+    style->ChildRounding = 4.0;
+    style->ScrollbarRounding = 10000.0;
+    style->TabRounding = 3.0;
 
-  style->SeparatorTextBorderSize = 1.0;
-  style->Colors[ImGuiCol_Text] = hex(0xc0c5ceff);
-  style->Colors[ImGuiCol_TextDisabled] = hex(0x555C77ff);
+    style->SeparatorTextBorderSize = 1.0;
+    style->Colors[ImGuiCol_Text] = hex(0xc0c5ceff);
+    style->Colors[ImGuiCol_TextDisabled] = hex(0x555C77ff);
 
-  style->Colors[ImGuiCol_WindowBg] = hex(background);
-  style->Colors[ImGuiCol_ChildBg] = hex(bg_dark);
-  style->Colors[ImGuiCol_PopupBg] = hex(background);
+    style->Colors[ImGuiCol_WindowBg] = hex(background);
+    style->Colors[ImGuiCol_ChildBg] = hex(bg_dark);
+    style->Colors[ImGuiCol_PopupBg] = hex(background);
 
-  style->Colors[ImGuiCol_Border] = hexa(grab, 0xaa);
-  style->Colors[ImGuiCol_BorderShadow] = hex(bg_dark);
+    style->Colors[ImGuiCol_Border] = hexa(grab, 0xaa);
+    style->Colors[ImGuiCol_BorderShadow] = hex(bg_dark);
 
-  style->Colors[ImGuiCol_FrameBg] = hex(0x343d4677);
-  style->Colors[ImGuiCol_FrameBgHovered] = hex(0x343d46cc);
-  style->Colors[ImGuiCol_FrameBgActive] = hex(0x343d46ff);
+    style->Colors[ImGuiCol_FrameBg] = hex(0x343d4677);
+    style->Colors[ImGuiCol_FrameBgHovered] = hex(0x343d46cc);
+    style->Colors[ImGuiCol_FrameBgActive] = hex(0x343d46ff);
 
-  style->Colors[ImGuiCol_TitleBg] = hexa(bg_dark, 0xff);
-  style->Colors[ImGuiCol_TitleBgCollapsed] = hexa(bg_dark, 0xaa);
-  style->Colors[ImGuiCol_TitleBgActive] = hexa(bg_dark, 0xff);
+    style->Colors[ImGuiCol_TitleBg] = hexa(bg_dark, 0xff);
+    style->Colors[ImGuiCol_TitleBgCollapsed] = hexa(bg_dark, 0xaa);
+    style->Colors[ImGuiCol_TitleBgActive] = hexa(bg_dark, 0xff);
 
-  style->Colors[ImGuiCol_MenuBarBg] = hexa(bg_dark, 0xff);
+    style->Colors[ImGuiCol_MenuBarBg] = hexa(bg_dark, 0xff);
 
-  style->Colors[ImGuiCol_ScrollbarBg] = hexa(bg_dark, 0xff);
-  style->Colors[ImGuiCol_ScrollbarGrab] = hexa(pink, 0x99);
-  style->Colors[ImGuiCol_ScrollbarGrabHovered] = hexa(pink, 0xaa);
-  style->Colors[ImGuiCol_ScrollbarGrabActive] = hexa(pink, 0xcc);
+    style->Colors[ImGuiCol_ScrollbarBg] = hexa(bg_dark, 0xff);
+    style->Colors[ImGuiCol_ScrollbarGrab] = hexa(pink, 0x99);
+    style->Colors[ImGuiCol_ScrollbarGrabHovered] = hexa(pink, 0xaa);
+    style->Colors[ImGuiCol_ScrollbarGrabActive] = hexa(pink, 0xcc);
 
-  style->Colors[ImGuiCol_CheckMark] = hex(pink);
+    style->Colors[ImGuiCol_CheckMark] = hex(pink);
 
-  style->Colors[ImGuiCol_SliderGrab] = hexa(pink, 0xaa);
-  style->Colors[ImGuiCol_SliderGrabActive] = hexa(pink, 0xdd);
+    style->Colors[ImGuiCol_SliderGrab] = hexa(pink, 0xaa);
+    style->Colors[ImGuiCol_SliderGrabActive] = hexa(pink, 0xdd);
 
-  style->Colors[ImGuiCol_Button] = hexa(pink, 0x33);
-  style->Colors[ImGuiCol_ButtonHovered] = hexa(pink, 0x44);
-  style->Colors[ImGuiCol_ButtonActive] = hexa(pink, 0x99);
+    style->Colors[ImGuiCol_Button] = hexa(pink, 0x33);
+    style->Colors[ImGuiCol_ButtonHovered] = hexa(pink, 0x44);
+    style->Colors[ImGuiCol_ButtonActive] = hexa(pink, 0x99);
 
-  style->Colors[ImGuiCol_Header] = hex(0x343d4622);
-  style->Colors[ImGuiCol_HeaderHovered] = hex(0x343d46cc);
-  style->Colors[ImGuiCol_HeaderActive] = hex(0x343d46ff);
+    style->Colors[ImGuiCol_Header] = hex(0x343d4622);
+    style->Colors[ImGuiCol_HeaderHovered] = hex(0x343d46cc);
+    style->Colors[ImGuiCol_HeaderActive] = hex(0x343d46ff);
 
-  style->Colors[ImGuiCol_Separator] = hexa(pink, 0x99);
-  style->Colors[ImGuiCol_SeparatorHovered] = hexa(pink, 0xbb);
-  style->Colors[ImGuiCol_SeparatorActive] = hex(pink);
+    style->Colors[ImGuiCol_Separator] = hexa(pink, 0x99);
+    style->Colors[ImGuiCol_SeparatorHovered] = hexa(pink, 0xbb);
+    style->Colors[ImGuiCol_SeparatorActive] = hex(pink);
 
-  style->Colors[ImGuiCol_ResizeGrip] = hexa(grab, 0xaa);
-  style->Colors[ImGuiCol_ResizeGripHovered] = hexa(grab, 0xdd);
-  style->Colors[ImGuiCol_ResizeGripActive] = hexa(grab, 0xff);
+    style->Colors[ImGuiCol_ResizeGrip] = hexa(grab, 0xaa);
+    style->Colors[ImGuiCol_ResizeGripHovered] = hexa(grab, 0xdd);
+    style->Colors[ImGuiCol_ResizeGripActive] = hexa(grab, 0xff);
 
-  style->Colors[ImGuiCol_Tab] = hex(frame);
-  style->Colors[ImGuiCol_TabHovered] = hexa(pink, 0xaa);
-  style->Colors[ImGuiCol_TabActive] = hexa(pink, 0x99);
-  style->Colors[ImGuiCol_TabUnfocused] = hexa(frame, 0xaa);
-  style->Colors[ImGuiCol_TabUnfocusedActive] = hexa(pink, 0x77);
+    style->Colors[ImGuiCol_Tab] = hex(frame);
+    style->Colors[ImGuiCol_TabHovered] = hexa(pink, 0xaa);
+    style->Colors[ImGuiCol_TabActive] = hexa(pink, 0x99);
+    style->Colors[ImGuiCol_TabUnfocused] = hexa(frame, 0xaa);
+    style->Colors[ImGuiCol_TabUnfocusedActive] = hexa(pink, 0x77);
 
-  style->Colors[ImGuiCol_DockingPreview] = hex(pink);
-  style->Colors[ImGuiCol_DockingEmptyBg] = hex(bg_dark);
+    style->Colors[ImGuiCol_DockingPreview] = hex(pink);
+    style->Colors[ImGuiCol_DockingEmptyBg] = hex(bg_dark);
 
-  style->Colors[ImGuiCol_PlotLines] = hexa(pink, 0xcc);
-  style->Colors[ImGuiCol_PlotLinesHovered] = hex(pink);
-  style->Colors[ImGuiCol_PlotHistogram] = hexa(pink, 0xcc);
-  style->Colors[ImGuiCol_PlotHistogramHovered] = hex(pink);
+    style->Colors[ImGuiCol_PlotLines] = hexa(pink, 0xcc);
+    style->Colors[ImGuiCol_PlotLinesHovered] = hex(pink);
+    style->Colors[ImGuiCol_PlotHistogram] = hexa(pink, 0xcc);
+    style->Colors[ImGuiCol_PlotHistogramHovered] = hex(pink);
 
-  style->Colors[ImGuiCol_TableHeaderBg] = hex(bg_dark);
-  style->Colors[ImGuiCol_TableBorderStrong] = hexa(pink, 0xdd);
-  style->Colors[ImGuiCol_TableBorderLight] = hexa(pink, 0xaa);
-  style->Colors[ImGuiCol_TableRowBg] = hex(background);
-  style->Colors[ImGuiCol_TableRowBgAlt] = hex(bg_dark);
+    style->Colors[ImGuiCol_TableHeaderBg] = hex(bg_dark);
+    style->Colors[ImGuiCol_TableBorderStrong] = hexa(pink, 0xdd);
+    style->Colors[ImGuiCol_TableBorderLight] = hexa(pink, 0xaa);
+    style->Colors[ImGuiCol_TableRowBg] = hex(background);
+    style->Colors[ImGuiCol_TableRowBgAlt] = hex(bg_dark);
 
-  style->Colors[ImGuiCol_TextSelectedBg] = hexa(pink, 0x44);
+    style->Colors[ImGuiCol_TextSelectedBg] = hexa(pink, 0x44);
 
-  style->Colors[ImGuiCol_DragDropTarget] = hex(pink);
+    style->Colors[ImGuiCol_DragDropTarget] = hex(pink);
 
-  // style->Colors[ImGuiCol_NavHighlight] = hex(unset);
-  // style->Colors[ImGuiCol_NavWindowingHighlight] = hex(unset);
-  // style->Colors[ImGuiCol_NavWindowingDimBg] = hex(unset);
-  // style->Colors[ImGuiCol_ModalWindowDimBg] = hex(unset);
+    // style->Colors[ImGuiCol_NavHighlight] = hex(unset);
+    // style->Colors[ImGuiCol_NavWindowingHighlight] = hex(unset);
+    // style->Colors[ImGuiCol_NavWindowingDimBg] = hex(unset);
+    // style->Colors[ImGuiCol_ModalWindowDimBg] = hex(unset);
+  }
 
   return ret;
 }
 
 void imgui_renderer_begin(Renderer *renderer) {
   igBegin("Properties", NULL, 0);
-  static bool debug_show = true;
-  if (igCollapsingHeader_BoolPtr("Debug", NULL,
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-    igText("Application average %.3f ms/frame (%.1f FPS)",
-           1000.0f / igGetIO()->Framerate, igGetIO()->Framerate);
-    igText("Accumulated frames: %u", renderer->accumulated_frames);
-  }
 }
 
 void imgui_renderer_end() { igEnd(); }

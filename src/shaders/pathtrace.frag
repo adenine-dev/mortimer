@@ -47,6 +47,7 @@ struct Material {
   vec3 albedo;
   uint _pad0;
 };
+
 layout(set = 0, binding = 7) readonly buffer MaterialsBuffer {
   Material materials[];
 }
@@ -103,6 +104,30 @@ vec2 square_to_heartish(vec2 u) {
   return ret;
 }
 
+struct Frame {
+  vec3 n;
+  vec3 s;
+  vec3 t;
+};
+
+Frame new_frame(vec3 n) {
+  float sign = n.z < 0.0 ? -1.0 : 1.0;
+  float a = 1.0 / -(sign + n.z);
+  float b = n.x * n.y * a;
+
+  return Frame(
+      n, normalize(vec3(1.0 + sign * n.x * n.x * a, sign * b, -sign * n.x)),
+      normalize(vec3(b, sign + n.y * n.y * a, -n.y)));
+}
+
+vec3 frame_to_local(Frame frame, vec3 v) {
+  return vec3(dot(v, frame.s), dot(v, frame.t), dot(v, frame.n));
+}
+
+vec3 frame_to_world(Frame frame, vec3 v) {
+  return frame.n * v.z + frame.t * v.y + frame.s * v.x;
+}
+
 Ray create_ray(vec2 uv, vec2 sample2) {
   uv = (uv * 2.0 - 1.0);
   vec4 ndsh = vec4(uv, -1.0, 1.0);
@@ -129,14 +154,9 @@ Ray create_ray(vec2 uv, vec2 sample2) {
         normalize((inverse(rotator_z * constants.view_matrix) * view_perp).xyz);
 
     vec3 t = cross(s, dir);
+    Frame frame = Frame(dir, s, t);
 #else
-    float sign = sign(dir.z);
-    float a = 1.0 / -(sign + dir.z);
-    float b = dir.x * dir.y * a;
-
-    vec3 s = normalize(
-        vec3(1.0 + sign * dir.x * dir.x * a, sign * b, -sign * dir.x));
-    vec3 t = normalize(vec3(b, sign + dir.y * dir.y * a, -dir.y));
+    Frame frame = new_frame(dir);
 #endif
 
     vec3 focus = ray.o + ray.d * (constants.env_focal_dist / length(ray.d));
@@ -147,7 +167,8 @@ Ray create_ray(vec2 uv, vec2 sample2) {
     vec2 offset = square_to_uniform_disk_concentric(sample2);
 #endif
 
-    ray.o = (s * offset.x + t * offset.y) * constants.env_lens_radius;
+    ray.o =
+        (frame.s * offset.x + frame.t * offset.y) * constants.env_lens_radius;
     ray.d = -normalize(ray.o - focus);
   }
 
@@ -297,52 +318,98 @@ vec3 square_to_cosine_hemisphere(vec2 u) {
   return vec3(d, z);
 }
 
+struct SufraceInteraction {
+  vec3 position;
+  vec3 normal;
+  vec3 wo_world;
+};
+
+Ray spawn_ray(SufraceInteraction si, vec3 dir) {
+  return Ray(si.position + si.normal * EPSILON,
+             normalize(face_forward(dir, si.normal)));
+}
+
+SufraceInteraction get_surface_interaction(Ray ray,
+                                           SceneIntersection intersection) {
+  vec3 position = ray.o + ray.d * intersection.t;
+  return SufraceInteraction(
+      position, get_face_normal(intersection.triangle_idx, position), -ray.d);
+}
+
+struct MaterialSample {
+  vec3 wi;
+  vec3 color;
+};
+
+MaterialSample sample_material(SufraceInteraction si, Material material) {
+  // transform to local
+  Frame frame = new_frame(si.normal);
+  vec3 wo = frame_to_local(frame, si.wo_world);
+
+  // begin brdf sample
+  // vec3 wi = wo * vec3(-1.0, -1.0, 1.0);
+  vec3 wi = face_forward(square_to_cosine_hemisphere(sample_2d()),
+                         vec3(0.0, 0.0, -1.0));
+  vec3 color = material.albedo;
+
+  // transform to world
+  vec3 wi_world = frame_to_world(frame, wi);
+  return MaterialSample(wi_world, color);
+}
+
 void main() {
   vec2 uv = i_uv * vec2(1.0, -1.0) + vec2(0.0, 1.0);  // flip viewport
   init_random(gl_FragCoord.xy, constants.frame);
 
-  vec3 normal = subpassLoad(sampler_normal).xyz;
-  uint object_id = subpassLoad(sampler_object_id).x;
-  if (object_id == NULL_OBJECT_ID) {
+  if (subpassLoad(sampler_object_id).x == NULL_OBJECT_ID) {
     col = vec4(0.0);
-    const uint N = 100;
-    for (uint i = 0; i < N; i++) {
+    for (uint i = 0; i < ESCAPED_RAY_SAMPLES; i++) {
       col += vec4(escaped_ray_color(create_ray(uv, sample_2d())), 1.0);
     }
     // col = vec4(create_ray(uv, sample_2d()).d, 1.0);
-    col /= N;
+    col /= ESCAPED_RAY_SAMPLES;
     return;
   }
 
+  const vec3 camera_eye =
+      -constants.view_matrix[3].xyz * mat3(constants.view_matrix);
+
   vec3 film = vec3(0.0);
-  const uint SAMPLES = 1;
-  for (uint i = 0; i < SAMPLES; i++) {
+
+  for (uint i = 0; i < RAY_SAMPLES; i++) {
+    uint object_id = subpassLoad(sampler_object_id).x;
+    vec3 normal = subpassLoad(sampler_normal).xyz;
     vec3 position = subpassLoad(sampler_position).xyz;
+    Material material = material_buffer.materials[object_id];
 
-    vec3 surface_color = material_buffer.materials[object_id].albedo;
-
-    const uint MAX_BOUNCES = 3;
-    vec3 surface_reflectance = surface_color;
-    const float EPSILON = 1e-5;
-
-    Ray ray = Ray(position + normal * EPSILON,
-                  normalize(face_forward(
-                      square_to_cosine_hemisphere(sample_2d()), normal)));
+    SufraceInteraction first_bounce_interaction =
+        SufraceInteraction(position, normal, -normalize(camera_eye - position));
+    MaterialSample first_bounce_material_sample =
+        sample_material(first_bounce_interaction, material);
+    vec3 surface_reflectance = first_bounce_material_sample.color;
+    Ray ray =
+        spawn_ray(first_bounce_interaction, first_bounce_material_sample.wi);
     vec3 contributed = vec3(0.0);
-    uint j;
-    for (j = 0; j < MAX_BOUNCES; j++) {
+    // col = vec4(first_bounce_material_sample.wi, 1.0);
+    // return;
+
+    for (uint j = 0; j < MAX_BOUNCES; j++) {
       SceneIntersection intersection = ray_scene_intersect(ray);
       if (intersection.object_id != NULL_OBJECT_ID) {
+        SufraceInteraction si = get_surface_interaction(ray, intersection);
+        position = si.position;
+        normal = si.normal;
         object_id = intersection.object_id;
-        surface_color = material_buffer.materials[object_id].albedo;
-        surface_reflectance *= surface_color;
-        position = (ray.o + ray.d * intersection.t);
-        normal = get_face_normal(intersection.triangle_idx, position);
-        ray.o = position + normal * EPSILON;
-        ray.d = normalize(
-            face_forward(square_to_cosine_hemisphere(sample_2d()), normal));
+        material = material_buffer.materials[object_id];
+
+        MaterialSample material_sample = sample_material(si, material);
+        surface_reflectance *= material_sample.color;
+
+        ray = spawn_ray(si, material_sample.wi);
       } else {
+        // ray has escaped
         contributed = surface_reflectance * escaped_ray_color(ray);
+
         break;
       }
     }
@@ -350,6 +417,6 @@ void main() {
     film += contributed;
   }
 
-  vec4 film_color = vec4(film / SAMPLES, 1.0);
+  vec4 film_color = vec4(film / RAY_SAMPLES, 1.0);
   col = film_color;
 }

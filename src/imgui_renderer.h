@@ -1,5 +1,7 @@
 #pragma once
 
+#include "types.h"
+
 #include <vulkan/vulkan.h>
 
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
@@ -8,7 +10,7 @@
 
 typedef struct Renderer_t Renderer;
 
-typedef struct ImguiRendererImpl_t {
+typedef struct {
   VkDescriptorPool descriptor_pool;
   ImGui_ImplVulkanH_Window main_window;
 } ImguiRendererImpl;

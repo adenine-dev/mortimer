@@ -31,7 +31,6 @@ typedef struct {
   VkSemaphore render_finished;
   VkFence in_flight;
   VkCommandBuffer command_buffer;
-  VkFramebuffer first_bounce_framebuffer;
   VkFramebuffer present_framebuffer;
 } PerFrameData;
 
@@ -46,6 +45,14 @@ typedef struct {
   VkBuffer handle;
   VkDeviceMemory memory;
 } Buffer;
+
+typedef enum : u32 {
+  PRESENT_MODE_POSITION = 0,
+  PRESENT_MODE_NORMAL = 1,
+  PRESENT_MODE_OBJECT_ID = 2,
+  PRESENT_MODE_COLOR = 3,
+  PRESENT_MODE_ACCUMULATION = 4,
+} PresentMode;
 
 typedef struct Renderer_t {
   // direct vulkan stuffs
@@ -93,6 +100,11 @@ typedef struct Renderer_t {
   VkPipelineLayout present_pipeline_layout;
   VkPipeline present_pipeline;
 
+  PresentMode present_mode;
+  VkRenderPass gui_render_pass;
+
+  Buffer fully_rendered_image_buffer;
+
   VkFramebuffer *trace_framebuffers;
   VkFramebuffer *swapchain_framebuffers;
 
@@ -128,8 +140,14 @@ Renderer renderer_create(SDL_Window *window);
 void renderer_destroy(Renderer *self);
 void renderer_update(Renderer *self);
 void renderer_resize(Renderer *self, u32 width, u32 height);
-
 void renderer_set_scene(Renderer *self, Scene *scene);
+
+// width, height, image data
+typedef void (*ReadFrameCallback)(u32, u32, u8 *);
+void renderer_read_frame(Renderer *self, ReadFrameCallback callback);
+
+typedef void (*ReadFrameHdrCallback)(u32, u32, vec4 *);
+void renderer_read_frame_hdr(Renderer *self, ReadFrameHdrCallback callback);
 
 #define ASSURE_VK(expr)                                                        \
   {                                                                            \

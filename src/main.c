@@ -124,7 +124,7 @@ int main(int argc, char **argv) {
   bool running = true;
 
   vec3 center = vec3New(0.0, 1.0, 0.0);
-  vec3 eye = vec3Add(center, vec3New(1.5, 0.0, 1.5));
+  vec3 eye = vec3Add(center, vec3New(0.0, -1.0, -2.5));
   // vec3 center = vec3New(0.0, 2.0, 0.0);
   // vec3 eye = vec3Add(center, vec3New(7.0, 2.5, -7.0));
   const vec3 up = vec3New(0.0, 1.0, 0.0);

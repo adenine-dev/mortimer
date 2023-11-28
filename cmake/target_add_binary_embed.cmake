@@ -36,16 +36,7 @@ function(create_binary_embed filename pathname alignment)
     string(MAKE_C_IDENTIFIER ${base_filename} c_name)
 
     file(READ ${filename} content HEX)
-    string(REGEX MATCHALL "([A-Fa-f0-9][A-Fa-f0-9])" SEPARATED_HEX ${content})
-    set(counter 0)
-    foreach (hex IN LISTS SEPARATED_HEX)
-        string(APPEND output_c "0x${hex}, ")
-        math(EXPR counter "${counter}+1")
-        if (counter GREATER 16)
-            string(APPEND output_c "\n    ")
-            set(counter 0)
-        endif ()
-    endforeach ()
+    string(REGEX REPLACE "([A-Fa-f0-9][A-Fa-f0-9])" "0x\\0," output_c ${content})
 
     set(output_c "// This file was automatically generated and should not be manually modified.
 

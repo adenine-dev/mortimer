@@ -4,6 +4,8 @@
 #include "math.h"
 #include "types.h"
 
+static const f32 PI = 3.14159265358979323846;
+
 #define clamp(_clamp_val, _clamp_min, _clamp_max)                              \
   (((_clamp_val) < (_clamp_min))                                               \
        ? (_clamp_min)                                                          \

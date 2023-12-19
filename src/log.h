@@ -27,7 +27,7 @@
 
 #define fatalln(str, ...)                                                      \
   do {                                                                         \
-    printf("\033[31m[ERROR]: %s:%d \033[0m", __FILE__, __LINE__);              \
+    printf("\033[31m[FATAL]: %s:%d \033[0m", __FILE__, __LINE__);              \
     printf(str, ##__VA_ARGS__);                                                \
     printf("\n");                                                              \
     assert(false);                                                             \

@@ -4,8 +4,6 @@
 #include "./common/constants.glsl"
 #include "./common/random.glsl"
 
-#define CFG_STYLIZE_HEART
-
 layout(location = 0) in vec2 i_uv;
 
 layout(location = 0) out vec4 col;
@@ -42,13 +40,15 @@ layout(set = 0, binding = 5) readonly buffer BvhBuffer { BvhNode nodes[]; }
 bvh;
 
 layout(set = 0, binding = 6) uniform sampler2D environment_map;
+layout(set = 0, binding = 7) uniform sampler2D environment_map_inv_cdf;
+layout(set = 0, binding = 8) uniform sampler2D environment_map_inv_marginal;
 
 struct Material {
   vec3 albedo;
   uint _pad0;
 };
 
-layout(set = 0, binding = 7) readonly buffer MaterialsBuffer {
+layout(set = 0, binding = 9) readonly buffer MaterialsBuffer {
   Material materials[];
 }
 material_buffer;
@@ -63,6 +63,7 @@ layout(push_constant) uniform PushConstants {
   uint frame;
   float env_focal_dist;
   float env_lens_radius;
+  float environment_map_pdf_scale;
 }
 constants;
 
@@ -316,16 +317,6 @@ bool ray_scene_unoccluded(Ray ray) {
   return true;
 }
 
-vec3 escaped_ray_color(Ray ray) {
-  vec2 uv = vec2(0.5 + (atan(ray.d.z, ray.d.x) / (PI * 2)),
-                 0.5 - asin(ray.d.y) * INV_PI);
-  return texture(environment_map, uv).xyz;
-
-  // return vec3(1.0, 0.4, 1.0);
-  // return mix(vec3((ray.d.y + 1) * 0.5), vec3(1.0, 1.0, 1.0),
-  //            vec3(1.0, 0.4, 1.0));
-}
-
 vec3 get_face_normal(uint i, vec3 p) {
   Vertex v0 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 0]];
   Vertex v1 = vertex_buffer.vertices[index_buffer.indices[i * 3 + 1]];
@@ -380,16 +371,6 @@ SufraceInteraction get_surface_interaction(Ray ray,
       position, get_face_normal(intersection.triangle_idx, position), -ray.d);
 }
 
-struct LightSample {
-  vec3 wi;
-  float pdf;
-};
-
-LightSample sample_light(SufraceInteraction si) {
-  return LightSample(
-      face_forward(square_to_cosine_hemisphere(sample_2d()), si.normal), PI);
-}
-
 vec3 eval_material(Material material, SufraceInteraction si, vec3 wi_world) {
   // Frame frame = new_frame(si.normal);
   // vec3 wo = frame_to_local(frame, si.wo_world);
@@ -398,10 +379,64 @@ vec3 eval_material(Material material, SufraceInteraction si, vec3 wi_world) {
   return material.albedo * INV_PI;
 }
 
+vec3 escaped_ray_color(Ray ray) {
+  vec2 uv = vec2(0.5 + (atan(ray.d.z, ray.d.x) / (PI * 2)),
+                 0.5 - asin(ray.d.y) * INV_PI);
+  return texture(environment_map, uv).xyz;
+}
+
+struct LightSample {
+  vec3 color;
+  vec3 wi;
+  float pdf;
+};
+
+float luminance(vec3 c) {
+  return 0.212671 * c.r + 0.715160 * c.g + 0.072169 * c.b;
+}
+
+LightSample sample_light(SufraceInteraction si) {
+  vec2 random = sample_2d();
+  float v = texture(environment_map_inv_marginal, vec2(0.5, random.y)).r;
+  float u = texture(environment_map_inv_cdf, vec2(random.x, v)).r;
+  float theta = PI * (v);
+  float phi = 2.0 * PI * (0.5 + u);
+  vec3 d = vec3(sin(theta) * cos(phi), cos(theta), sin(theta) * sin(phi));
+
+  vec3 c = escaped_ray_color(Ray(vec3(0.0), d));
+  if (sin(theta) == 0.0) {
+    return LightSample(vec3(0.0), vec3(0.0), 0.0);
+  }
+
+  return LightSample(c, d,
+                     (luminance(c) / constants.environment_map_pdf_scale) /
+                         (2.0 * PI * sin(theta)));
+}
+
+vec3 direct_light_sample(SufraceInteraction si, Material material) {
+  vec3 contributed = vec3(0.0);
+
+  for (uint i = 0; i < LIGHT_SAMPLES; ++i) {
+    LightSample light_sample = sample_light(si);
+    Ray r = spawn_ray(si, light_sample.wi);
+    if (ray_scene_unoccluded(r)) {
+      float cos_theta = dot(light_sample.wi, si.normal);
+      if (cos_theta > 0.0 && light_sample.pdf > 0.0) {
+        vec3 f = eval_material(material, si, light_sample.wi) * cos_theta;
+        contributed += f * escaped_ray_color(Ray(vec3(0.0), light_sample.wi)) /
+                       (light_sample.pdf);
+      }
+    }
+  }
+
+  return contributed / LIGHT_SAMPLES;
+}
+
 void main() {
   vec2 uv = i_uv * vec2(1.0, -1.0) + vec2(0.0, 1.0);  // flip viewport
   init_random(gl_FragCoord.xy, constants.frame);
 
+#ifndef CFG_NO_FIRST_BOUNCE
   if (subpassLoad(sampler_object_id).x == NULL_OBJECT_ID) {
     col = vec4(0.0);
     for (uint i = 0; i < ESCAPED_RAY_SAMPLES; i++) {
@@ -411,6 +446,7 @@ void main() {
     col /= ESCAPED_RAY_SAMPLES;
     return;
   }
+#endif
 
   const vec3 camera_eye =
       -constants.view_matrix[3].xyz * mat3(constants.view_matrix);
@@ -418,6 +454,16 @@ void main() {
   vec3 film = vec3(0.0);
 
   for (uint i = 0; i < RAY_SAMPLES; i++) {
+    vec3 contributed = vec3(0.0);
+    vec3 surface_reflectance = vec3(1.0);
+
+#ifdef CFG_NO_FIRST_BOUNCE
+    uint object_id;
+    vec3 position;
+    vec3 normal;
+    Material material;
+    Ray ray = create_ray(uv, sample_2d());
+#else
     uint object_id = subpassLoad(sampler_object_id).x;
     vec3 normal = subpassLoad(sampler_normal).xyz;
     vec3 position = subpassLoad(sampler_position).xyz;
@@ -426,25 +472,22 @@ void main() {
     SufraceInteraction first_bounce_interaction =
         SufraceInteraction(position, normal, -normalize(camera_eye - position));
 
+    if (SAMPLE_LIGHTS) {
+      contributed += surface_reflectance *
+                     direct_light_sample(first_bounce_interaction, material);
+    }
+
     const vec3 wi = square_to_uniform_hemisphere(sample_2d());
     Frame frame = new_frame(first_bounce_interaction.normal);
     vec3 wi_world = frame_to_world(frame, wi);
     const float pdf = (INV_PI * 0.5);
-    vec3 surface_reflectance =
+    surface_reflectance *=
         eval_material(material, first_bounce_interaction, wi_world) *
         abs(dot(wi_world, first_bounce_interaction.normal)) / pdf;
 
     Ray ray = spawn_ray(first_bounce_interaction, wi_world);
+#endif
 
-    // repalce above for no first bounce data
-    // vec3 position;
-    // vec3 normal;
-    // uint object_id;
-    // Material material;
-    // vec3 surface_reflectance = vec3(1.0);
-    // Ray ray = create_ray(uv, sample_2d());
-
-    vec3 contributed = vec3(0.0);
     for (uint j = 0; j < MAX_BOUNCES - 1; j++) {
       SceneIntersection intersection = ray_scene_intersect(ray);
       if (intersection.object_id != NULL_OBJECT_ID) {
@@ -454,20 +497,12 @@ void main() {
         object_id = intersection.object_id;
         material = material_buffer.materials[object_id];
 
-        const bool sample_lights = true;
-        if (sample_lights) {
-          LightSample light_sample = sample_light(si);
-          Ray r = Ray(si.position, light_sample.wi);
-          if (ray_scene_unoccluded(r)) {
-            vec3 f = eval_material(material, si, light_sample.wi) *
-                     abs(dot(light_sample.wi, si.normal));
-            contributed += surface_reflectance * f * escaped_ray_color(r) /
-                           (light_sample.pdf);
-          }
+        if (SAMPLE_LIGHTS) {
+          contributed +=
+              surface_reflectance * direct_light_sample(si, material);
         }
 
-        const bool sample_materials = false;
-        if (sample_materials) {
+        if (SAMPLE_MATERIALS) {
           // UNIMPLEMENTED
         } else {
           vec3 wi = square_to_uniform_hemisphere(sample_2d());

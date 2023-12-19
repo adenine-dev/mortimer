@@ -213,9 +213,14 @@ ImguiRendererImpl init_imgui_render_impl(Renderer *renderer,
 
 void imgui_renderer_begin(Renderer *renderer) {
   igBegin("Properties", NULL, 0);
+  // good base width to keep the props window smaller
+  igPushItemWidth(igGetWindowWidth() * 0.55f);
 }
 
-void imgui_renderer_end() { igEnd(); }
+void imgui_renderer_end() {
+  igPopItemWidth();
+  igEnd();
+}
 
 void imgui_renderer_update(VkCommandBuffer cmdbuffer) {
   igRender();

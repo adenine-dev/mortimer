@@ -46,6 +46,12 @@ typedef struct {
   VkDeviceMemory memory;
 } Buffer;
 
+typedef struct {
+  VkImage handle;
+  VkDeviceMemory memory;
+  VkImageView view;
+} Image;
+
 typedef enum : u32 {
   PRESENT_MODE_POSITION = 0,
   PRESENT_MODE_NORMAL = 1,
@@ -129,9 +135,9 @@ typedef struct Renderer_t {
   Buffer material_buffer;
 
   EnvironmentLight *envlight;
-  VkImage envlight_image;
-  VkDeviceMemory envlight_image_memory;
-  VkImageView envlight_image_view;
+  Image envlight_img;
+  Image envlight_cdfs;
+  Image envlight_marginal;
 
   ImguiRendererImpl imgui_impl;
 } Renderer;

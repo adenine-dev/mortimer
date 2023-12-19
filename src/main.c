@@ -116,7 +116,9 @@ int main(int argc, char **argv) {
                    (Material){.albedo = vec3New(0.84, 0.6, 0.9)});
   scene_add_object(&scene, "assets/models/ground.obj",
                    (Material){.albedo = vec3New(0.2, 0.2, 0.2)});
-  scene_set_envlight(&scene, "assets/hdris/sunset_jhbcentral_4k.hdr");
+  // scene_set_envlight(&scene, "assets/hdris/sunset_jhbcentral_4k.hdr");
+  // scene_set_envlight(&scene, "assets/hdris/satara_night_4k.hdr");
+  scene_set_envlight(&scene, "assets/hdris/studio_garden_4k.hdr");
 
   renderer_set_scene(&renderer, &scene);
 

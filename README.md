@@ -34,4 +34,5 @@ cmake --build ./build && ./build/mortimer
 - [cimgui](https://github.com/cimgui/cimgui): imgui bindings for C.
 - [stb libraries](https://github.com/nothings/stb): image read/write.
 - [Fira Code](https://github.com/tonsky/FiraCode): better font for gui.
+- [Blue noise texture](https://github.com/Calinou/free-blue-noise-textures): blue noise textures.
 - See `./assets` directory for various assets.

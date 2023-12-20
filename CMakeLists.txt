@@ -45,5 +45,7 @@ target_include_directories(mortimer PRIVATE vendor/stb)
 target_include_directories(mortimer PRIVATE vendor/tinyobjloader)
 target_include_directories(mortimer PRIVATE ${Vulkan_INCLUDE_DIR})
 target_link_libraries(mortimer Vulkan::Vulkan cimgui_sdl3_vulkan)
+target_add_binary_embed(mortimer ${CMAKE_CURRENT_SOURCE_DIR}/src/embed/blue_noise/rgba_1024x1024.png)
+target_add_binary_embed(mortimer ${CMAKE_CURRENT_SOURCE_DIR}/src/embed/FiraCode/FiraCode-Regular.ttf)
 
 add_shader_modules(mortimer ${SHADER_MODULES})

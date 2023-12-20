@@ -1,9 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-#include "./common/constants.glsl"
-#include "./common/random.glsl"
-
 layout(location = 0) in vec2 i_uv;
 
 layout(location = 0) out vec4 col;
@@ -43,12 +40,14 @@ layout(set = 0, binding = 6) uniform sampler2D environment_map;
 layout(set = 0, binding = 7) uniform sampler2D environment_map_inv_cdf;
 layout(set = 0, binding = 8) uniform sampler2D environment_map_inv_marginal;
 
+layout(set = 0, binding = 9) uniform sampler2D blue_noise_tex;
+
 struct Material {
   vec3 albedo;
   uint _pad0;
 };
 
-layout(set = 0, binding = 9) readonly buffer MaterialsBuffer {
+layout(set = 0, binding = 10) readonly buffer MaterialsBuffer {
   Material materials[];
 }
 material_buffer;
@@ -66,6 +65,13 @@ layout(push_constant) uniform PushConstants {
   float environment_map_pdf_scale;
 }
 constants;
+
+#include "./common/constants.glsl"
+
+#ifdef CFG_BLUE_NOISE
+#define BLUE_NOISE
+#endif
+#include "./common/random.glsl"
 
 struct Ray {
   vec3 o;

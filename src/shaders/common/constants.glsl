@@ -25,6 +25,9 @@ const bool SAMPLE_LIGHTS = true;
 /// define to stylize the defocus blur kernal to be heart shaped
 #define CFG_STYLIZE_HEART
 
+/// define to use blue noise
+#define CFG_BLUE_NOISE
+
 /// define to not use the rasterized first bounce g buffers (this is needed if
 /// you want defocus blur on the geometry of the scene)
 // #define CFG_NO_FIRST_BOUNCE

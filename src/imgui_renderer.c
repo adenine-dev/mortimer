@@ -1,7 +1,7 @@
 #include "imgui_renderer.h"
 #include "SDL_video.h"
 #include "cimgui.h"
-#include "embed/FiraCode/FiraCode-Regular.h"
+#include "embed/FiraCode/FiraCode_Regular_ttf.h"
 #include "log.h"
 #include "renderer.h"
 

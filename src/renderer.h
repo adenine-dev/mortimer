@@ -139,6 +139,8 @@ typedef struct Renderer_t {
   Image envlight_cdfs;
   Image envlight_marginal;
 
+  Image blue_noise;
+
   ImguiRendererImpl imgui_impl;
 } Renderer;
 

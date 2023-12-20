@@ -6,8 +6,7 @@
 
 #include "SDL_video.h"
 #include "ccVector.h"
-#include "scene.h"
-#include "trimesh.h"
+#include "stb_image.h"
 #include <vulkan/vulkan_core.h>
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
@@ -16,7 +15,11 @@
 #include "log.h"
 #include "maths.h"
 #include "renderer.h"
+#include "scene.h"
+#include "trimesh.h"
 #include "types.h"
+
+#include "embed/blue_noise/rgba_1024x1024_png.h"
 
 #include "shaders/embed/accumulate_frag_spv.h"
 #include "shaders/embed/first_bounce_frag_spv.h"
@@ -517,6 +520,9 @@ Image create_image(Renderer *self, CreateImageInfo create_info) {
   } break;
   case VK_FORMAT_R32G32B32A32_SFLOAT: {
     format_size = sizeof(f32) * 4;
+  } break;
+  case VK_FORMAT_R8G8B8A8_UNORM: {
+    format_size = sizeof(u8) * 4;
   } break;
   default: {
     fatalln("unsupported format type %d", create_info.format);
@@ -1425,7 +1431,7 @@ Renderer renderer_create(SDL_Window *window) {
   { // create descriptor pool
     const u32 pool_sizes_len = 3;
     VkDescriptorPoolSize pool_sizes[pool_sizes_len] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9},
         {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 5},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
     };
@@ -1624,7 +1630,7 @@ Renderer renderer_create(SDL_Window *window) {
   }
 
   { // path trace pipeline
-    const u32 binding_count = 10;
+    const u32 binding_count = 11;
     VkDescriptorSetLayoutBinding bindings[binding_count] = {
         {
             .binding = 0,
@@ -1682,6 +1688,12 @@ Renderer renderer_create(SDL_Window *window) {
         },
         {
             .binding = 9,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 10,
             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2237,6 +2249,28 @@ Renderer renderer_create(SDL_Window *window) {
     renderer_set_or_update_camera(&renderer);
   }
 
+  { // load blue noise data into texture
+    int width;
+    int height;
+    int channels;
+    void *data =
+        stbi_load_from_memory(rgba_1024x1024_png_data, rgba_1024x1024_png_size,
+                              &width, &height, &channels, 4);
+    if (!data) {
+      fatalln("could not load blue noise data");
+    }
+    if (width != 1024 || height != 1024) {
+      warnln("something has gone very wrong with the blue noise texture");
+    }
+    renderer.blue_noise =
+        create_image(&renderer, (CreateImageInfo){
+                                    .data = data,
+                                    .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                    .width = width,
+                                    .height = height,
+                                });
+  }
+
   renderer.present_mode = PRESENT_MODE_ACCUMULATION;
 
   renderer.imgui_impl = init_imgui_render_impl(&renderer, window);
@@ -2279,7 +2313,7 @@ void recreate_swapchain(Renderer *self) {
   create_swapchain(self);
   create_framebuffers(self);
 
-  const u32 trace_input_descriptor_set_writes_count = 9;
+  const u32 trace_input_descriptor_set_writes_count = 10;
   VkWriteDescriptorSet trace_input_descriptor_set_writes
       [trace_input_descriptor_set_writes_count] = {
           {
@@ -2398,6 +2432,20 @@ void recreate_swapchain(Renderer *self) {
               .pImageInfo =
                   &(VkDescriptorImageInfo){
                       .imageView = self->envlight_marginal.view,
+                      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      .sampler = self->vec3_sampler,
+                  },
+          },
+          {
+              .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = self->trace_descriptor_set,
+              .dstBinding = 9,
+              .dstArrayElement = 0,
+              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+              .descriptorCount = 1,
+              .pImageInfo =
+                  &(VkDescriptorImageInfo){
+                      .imageView = self->blue_noise.view,
                       .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       .sampler = self->vec3_sampler,
                   },
@@ -2538,6 +2586,8 @@ void renderer_destroy(Renderer *self) {
   vkDeviceWaitIdle(self->device);
 
   imgui_renderer_destroy(self, &self->imgui_impl);
+
+  destroy_image(self, &self->blue_noise);
 
   destroy_image(self, &self->envlight_img);
   destroy_image(self, &self->envlight_marginal);
@@ -2701,7 +2751,7 @@ void renderer_set_scene(Renderer *self, Scene *scene) {
   VkWriteDescriptorSet material_desc_set_write = {
       .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
       .dstSet = self->trace_descriptor_set,
-      .dstBinding = 9,
+      .dstBinding = 10,
       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
       .descriptorCount = 1,
       .pBufferInfo =
